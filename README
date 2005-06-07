@@ -1,0 +1,53 @@
+==============================
+Search/Kinosearch version 0.01
+==============================
+
+NAME
+
+    Search::Kinosearch - search engine library
+
+DESCRIPTION
+
+    Kinosearch is a fast, extensible search engine library.  Its features
+        include: 
+
+        * Match 'any' or 'all' search terms 
+        * Match phrases 
+        * Boolean operators AND, OR, and NOT 
+        * Support for parenthetical groupings of arbitrary depth 
+        * Prepended +plus or -minus to require or negate a term 
+        * Sort results by relevance or by date 
+        * Stemming
+        * Algorithmic selection of relevant excerpts 
+        * Hilighting of search terms in excerpts, even when stemmed 
+        * Fast, efficient algorithms for both indexing and searching 
+        * Works well with large or small document collections 
+        * High quality ranking algorithm based on term frequency / inverse 
+            document frequency (tf/idf)
+
+INSTALLATION
+
+    To install this module type the following:
+
+        perl Makefile.PL
+        make
+        make test
+        make install
+
+DEPENDENCIES
+
+    This module requires these other modules and libraries:
+
+        Sort::External
+        Digest::MD5
+        String::CRC32
+        Compress::Zlib
+        Lingua::Stem::Snowball
+        Test::Exception
+
+COPYRIGHT AND LICENCE
+
+    Copyright (C) 2005 Marvin Humphrey
+
+    This library is free software; you can redistribute it and/or modify
+    it under the same terms as Perl itself. 
