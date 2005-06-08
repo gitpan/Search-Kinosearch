@@ -1,5 +1,9 @@
 Revision history for Perl extension Search::Kinosearch.
 
+0.02
+    - Fixed missing true value at the end of QueryParser.pm
+    - Updated dependency for Sort::External to 0.02
+
 0.01
     - Many changes to the interface and kindex file format.
     - Many search-time performance improvements.

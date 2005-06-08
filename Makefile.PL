@@ -10,7 +10,7 @@ WriteMakefile(
         'Compress::Zlib'                => 1.33,
         'Lingua::Stem::Snowball'        => 0.7,
         'Test::Exception'               => 0.15,
-        'Sort::External'                => 0.01,
+        'Sort::External'                => 0.02,
         'String::CRC32'                 => 1.3,
         },
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005

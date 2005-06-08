@@ -562,6 +562,8 @@ sub _expand_phrases {
     $sprout->{productions} = \@productions;
 }
 
+1;
+
 __END__
 
 =head1 NAME

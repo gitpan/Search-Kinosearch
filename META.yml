@@ -1,14 +1,14 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Search-Kinosearch
-version:      0.01
+version:      0.02
 version_from: lib/Search/Kinosearch.pm
 installdirs:  site
 requires:
     Compress::Zlib:                1.33
     Digest::MD5:                   2.33
     Lingua::Stem::Snowball:        0.7
-    Sort::External:                0.01
+    Sort::External:                0.02
     String::CRC32:                 1.3
     Test::Exception:               0.15
 
