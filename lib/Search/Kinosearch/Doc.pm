@@ -9,8 +9,6 @@ use Carp;
 ### a hashref to the constructor to be used as $self.
 # my %new_defaults = (
 #   fields => undef,
-#   sortstring => undef,
-#   sortstring_bytes => 0,
 #   datetime_string => undef,
 #   datetime_ymdhms => undef,
 # );
@@ -53,14 +51,6 @@ sub set_datetime {
         unless @_ == 6;
     $self->{datetime_ymdhms} = \@args; 
     $self->{datetime_string} = pack("c n c c c c c ", 0,@args);
-}
-
-##############################################################################
-### Set the sortstring for this document. EXPERIMENTAL!
-##############################################################################
-sub set_sortstring {
-    my $self = shift;
-    $self->{sortstring} = shift;
 }
 
 1;
@@ -123,14 +113,6 @@ use.
 
 The value for the year must fit within a 16 bit signed int (at least until
 someone points me at a module that can turn YMDHMS into a 64bit timestamp).
-
-=begin comment
-
-=head2 set_sortstring()
-
-Experimental.
-
-=end comment
 
 =head1 SEE ALSO
 

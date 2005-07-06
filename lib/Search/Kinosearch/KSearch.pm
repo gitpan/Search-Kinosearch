@@ -2,17 +2,16 @@ package Search::Kinosearch::KSearch;
 use strict;
 use warnings;
 
-use base qw( Search::Kinosearch Search::Kinosearch::QueryParser );
+use base qw( Search::Kinosearch Search::Kinosearch::QueryParser
+             Class::WhiteHole);
 use Search::Kinosearch::Kindex;
 use Search::Kinosearch::Query;
-use Search::Kinosearch::QueryParser;
 use Search::Kinosearch::Doc;
 
 use attributes 'reftype';
+use bytes;
 
 use Carp;
-use Storable qw( nfreeze thaw );
-use String::CRC32 'crc32';
 
 ##############################################################################
 ### Create a new Search::Kinosearch::Ksearch object.
@@ -45,6 +44,7 @@ my %init_ksearch_defaults = (
     ### The production type.  'taproot', because it's lower than trunk, and
     ### the word 'root' might be confusing.
     prodtype           => 'taproot',
+    result_set         => undef, # defined later...
 );
 
 ##############################################################################
@@ -77,14 +77,21 @@ sub _init_ksearch {
      
     ### Where queries accumulate.
     $self->{productions} = [];
-    ### Used for excerpt highlighting.
-    $self->{searchterms} = [];
     
     ### TODO separate QueryParser from KSearch completely.
     $self->_init_queryparser;
     
     ### Define tokenizing, stemming, $tokenreg, stoplist, etc.
     $self->define_language_specific_functions;
+
+    ### Assign a range for document numbers to each subkindex.
+    my $doc_num_offset = 0;
+    $self->{subk_doc_num_offsets} = [];
+    for (0 .. $#{ $self->{kindex}{subk_docs} }) {
+        $self->{subk_doc_num_offsets}[$_] = $doc_num_offset;
+        $doc_num_offset += $self->{kindex}{subk_docs}[$_];
+    }
+#    $self->{result_set} = Search::Kinosearch::KSearch::ResultSet->new(0,0);
 }
 
 ##############################################################################
@@ -109,98 +116,105 @@ sub process {
 
     return unless $self->{productions};
 
+    my $kindex = $self->{kindex};
+
+    my $kinodel = $kindex->{kinodel};
+    my $subkindexes = $kindex->{subkindexes};
+
     $self->parse;
 
-    $self->_retrieve_term_scores($_, $_) foreach @{ $self->{productions} };
     $self->_recursive_score($self);
 
-    if ($self->{-excerpt_field}) {
-        $self->_create_searchterm_list($self);
-    }
-    my @searchterm_crcs 
-        = map { crc32($_) } @{ $self->{searchterms} };
-
-    my @in;
-    ### '' in the result set is a useful kludge.  See below. 
-    delete $self->{result_set}{''} if exists $self->{result_set}{''};
-    ### Perform a 'packed default sort.
-    if ($self->{-sort_by} eq 'score') {
-        while (my ($doc_tag, $score) = each %{ $self->{result_set} } ) {
-            push @in, (pack("N", $score) . $doc_tag);
-        }
-    }
-    else {
-        while (my ($doc_tag, $string) = each %{ $self->{result_set} } ) {
-            push @in, ($string . $doc_tag);
-        }
-    }
-    my @out = $self->{-ascdesc} eq 'descending' ?
-              (sort { $b cmp $a } @in) :
-              (sort @in);
-              
-    $self->{status_hash}{num_hits} = @out;
-
+    my $result_set = $self->{result_set};
+    
+    my $total_hits = $result_set->_get_num_hits;
+    $result_set->_sort_hits($self->{-sort_by});
     my @ranked_results;
+    $self->{ranked_results} = \@ranked_results;
+    $self->{status_hash}{num_docs} = $kindex->{num_docs};
+    my $num_hits = $self->{status_hash}{num_hits} = $result_set->_get_num_hits;
+    return $self->{status_hash} unless $num_hits;
+    
     my $first = $self->{-offset};
-    my $last = $first + $self->{-num_results} - 1;
+    my $last = $first + $self->{-num_results};
     my $valid_hits = 0;
     
-    my $pack_template;
-    if ($self->{-sort_by} eq 'score') {
-        $pack_template = 'N C N ';
-    }
-    else {
-        my $bytes_per_hit = length($out[0]);
-        $bytes_per_hit -= 5;
-        $pack_template = "A$bytes_per_hit C N";
-    }
-    
+    my $hit_iter = 0;
+    my ($doc_num, $raw_score);
+
+    ### Get the highest raw score in the bunch, so that we can normalize all
+    ### scores.
+    my $hit_info = $result_set->_retrieve_hit_info($hit_iter); 
+    my $highest_raw_score = $hit_info->{score} ? $hit_info->{score} : 1;
+
+    $hit_iter = -1;
     ### Assemble a hit list.
-    my $storable_fields = $self->{kindex}{fields_store};
+    my $descending = $self->{-ascdesc} eq 'descending' ? 1 : 0;
+    my $storable_fields = $kindex->{fields_store};
     my $num_storable_fields = @$storable_fields;
-    while (my $hit = shift @out) {
-        last if $valid_hits >= $last;
-        my ($score_or_string, $knum, $doc_num)
-                = unpack ($pack_template, $hit);
+    my $subk_doc_num_offsets = $self->{subk_doc_num_offsets};
+    while ($valid_hits < $last and $hit_iter < ($num_hits-1)) {
+        $hit_iter++;
+        my $raw_hit_num = $descending ? $hit_iter : $total_hits - $hit_iter;
+        $hit_info = $result_set->_retrieve_hit_info($raw_hit_num);
+        $doc_num = $hit_info->{doc_num};
+        $raw_score = $hit_info->{score};
+        my $knum = -1; 
+        for (@$subk_doc_num_offsets) {
+            $knum++;
+            next unless $_ >= $doc_num;
+            $doc_num -= $_;
+            last;
+        }
         next if exists 
-            $self->{kindex}{kinodel}{$doc_num}{$knum};
+            $kinodel->{$doc_num}{$knum};
+        $highest_raw_score ||= $raw_score;
         ### If it isn't a deletion, it's a valid hit.
         $valid_hits++;
         ### If we haven't reached the offset yet, go to the next hit.
         next unless $valid_hits > $first;
         ### Retrieve stored document fields, and put them in a Doc object.
-        my $docdata = $self->{kindex}{subkindexes}[$knum]{kinodocs}{$doc_num};
+        my $docdata = $subkindexes->[$knum]{kinodocs}[$doc_num];
         my %stored_fields;
         
         my @field_lengths 
-            = unpack('N*', substr($docdata, 0, ($num_storable_fields*4)));
-        my $len_stored = $num_storable_fields*4;
+            = unpack('N*', substr($docdata, 36, ($num_storable_fields*4)));
+        my $len_stored = 36 + $num_storable_fields*4;
         $len_stored += $_ for @field_lengths;
 
-        my $stored_fields_tpt = 'a' . ($num_storable_fields*4) . ' ';
+        my $stored_fields_tpt = 'a36 a' . ($num_storable_fields*4) . ' ';
         $stored_fields_tpt .= "a$_ " for @field_lengths;
-        (undef, @stored_fields{@$storable_fields}) = 
+        (undef, undef, @stored_fields{@$storable_fields}) = 
             unpack($stored_fields_tpt, substr($docdata, 0, $len_stored, ''));
 
-        my $num_tokens = unpack('N', substr($docdata, 0, 4));
-        my @token_crcs;
-        (undef, @token_crcs) = unpack('N*',
-             substr($docdata, 0, ($num_tokens*4 + 4),''));
-        my @token_freqs = unpack('N*',
-             substr($docdata, 0, ($num_tokens*4),''));
-        my $token_infos_tpt = '';
-        $token_infos_tpt .= "a$_ " for @token_freqs;
-        my %token_infos;
-        @token_infos{@token_crcs} = unpack($token_infos_tpt, $docdata);
-
-        my @positions;
-        for (@searchterm_crcs) {
-            next unless exists $token_infos{$_};
-            push @positions, unpack('N*', $token_infos{$_});
+        my ($num_tokens, $num_tokens_bigger_than_250) 
+            = unpack('N N ', substr($docdata, 0, 8, ''));
+        my @posdeltas;
+        if ($num_tokens_bigger_than_250) {
+            @posdeltas 
+                = unpack('C*', substr($docdata, 0, ($num_tokens + 8),''));
+            my @bigger_than_250 = unpack('n*', $docdata);
+            for (@posdeltas) {
+                $_ = shift @bigger_than_250 if $_ == 255;
+            }
         }
+        else {
+            @posdeltas = unpack('C*', $docdata);
+        }
+        
+        my @positions;
+        my $pos = 0;
+        for (@posdeltas) {
+            $pos += $_;
+            push @positions, $pos;
+        }
+        my $token_positions = $hit_info->{positions};
+        @positions = @positions[@$token_positions];
+
         my ($excerpt_field_start, $excerpt_field_length) = (0,0);
         for (0 .. $#$storable_fields) {
-            if ($self->{-excerpt_field} = $storable_fields->[$_]) {
+            last unless defined $self->{-excerpt_field};
+            if ($self->{-excerpt_field} eq $storable_fields->[$_]) {
                 $excerpt_field_length = $field_lengths[$_];
                 last;
             }
@@ -208,24 +222,24 @@ sub process {
                 $excerpt_field_start += $field_lengths[$_];
             }
         }
+        my $excerpt_field_end = $excerpt_field_start + $excerpt_field_length;
+        @positions = grep 
+            { $_ >= $excerpt_field_start and $_ < $excerpt_field_end }
+                @positions;
         $_ -= $excerpt_field_start for @positions;    
-        @positions 
-            = grep { $_ >= 0 and $_ < $excerpt_field_length } @positions;
 
         my $doc = Search::Kinosearch::Doc->new( 
             { fields => \%stored_fields } );
-        push @ranked_results, $doc;
         if ($self->{-sort_by} eq 'score') {    
-            $ranked_results[-1]{score} = $score_or_string/32_000;
+            $doc->set_field( score =>  $raw_score/$highest_raw_score);
         }
+        push @ranked_results, $doc;
         if ($self->{-excerpt_field}) {
             $doc->set_field( 
                 excerpt => $self->_create_excerpt($knum, $doc, \@positions) );
         }
     }
-    $self->{ranked_results} = \@ranked_results;
-    $self->{status_hash}{num_docs} = $self->{num_docs};
-    return $self->{status_hash}; 
+    return $self->{status_hash};
 }
 
 ### Like many recursive routines, the flow of the _recursive_score 
@@ -233,7 +247,7 @@ sub process {
 ### intended to compensate for the fact that even heavily commented, the code
 ### doesn't do a good job of documenting itself.
 ### 
-### The seed for the _recursive_score subroutine is itself the product of
+### The tree which _recursive_score walks is itself the product of
 ### another recursive routine, Search::Kinosearch::QueryParser->parse.
 ### 
 ### Each level in the hierarchy of the parsed Query object consists of 
@@ -293,143 +307,158 @@ sub _recursive_score {
     my $self = shift;
     my $sprout = shift;
 
-    return unless $sprout->{productions};
-    return if $sprout->{prodtype} eq 'terminal';
+    if ($sprout->{prodtype} eq 'terminal') {
+        $self->_retrieve_term_scores($sprout);
+    }
     
+    return unless $sprout->{productions} and @{ $sprout->{productions} };
+
     ### Sort productions into the order which yields the quickest set mergers.
     my @sorted_productions = sort {
         $b->{negated}  <=> $a->{negated}
                        or
         $b->{required} <=> $a->{required}
                        or
-        $a->{set_size} <=> $b->{set_size}
+        $a->{result_set}->_get_num_hits <=> $b->{result_set}->_get_num_hits
         } (@{ $sprout->{productions} });
 
     $self->_recursive_score($_) foreach @sorted_productions;
+     
+    if ($sprout->{prodtype} eq 'phrase' 
+        and @{ $sprout->{productions} } > 1) 
+    {
+        ### Work backwards from the end of the phrase, winnowing down the
+        ### docs.  If the phrase to be matched is "I am the walrus", match 
+        ### "the" and "walrus" in successive token positions, producing a 
+        ### result set consisting of documents which match "the walrus" and
+        ### positional data for where "the walrus" starts.  Armed with
+        ### this result, look for documents which contain "am" followed by 
+        ### "the walrus"... and so on... In the end, we will have a result 
+        ### set consisting of documents which contain the full phrase "I 
+        ### am the walrus" and markers pointing to where the phrase begins.
+        for (reverse (1 .. $#{ $sprout->{productions} })) {
+            my $s1 = $sprout->{productions}[$_ - 1]{result_set};   
+            my $s2 = $sprout->{productions}[$_]{result_set};   
+            $s1->_score_phrases($s2);
+        }
+        
+        $sprout->{result_set} = $sprout->{productions}[0]{result_set};
+        my $phraselength = @{ $sprout->{productions} };
+        $sprout->{result_set}->_expand_phrase_posdata($phraselength);
+        return;
+    }
     
-    my $reqlist = {};
-    my $neglist = {};
-    my $result_set = {};
+    my $reqlist = undef;
+    my $neglist = undef;
+    my $result_set = Search::Kinosearch::KSearch::ResultSet->new(0,0);
     
     ### If the parent node has only one child, then inheritance is
     ### straightforward -- the result set passes from parent to child
-    ### by reference (without any modification).
-    if ((@{ $sprout->{productions} } == 1) 
-        and ($sprout->{productions}[0]{set_size})) 
-    {
-        if ($sprout->{productions}[0]{negated}) {
-            $sprout->{result_set} = {};
-            $sprout->{set_size} = 0;
+    ### without any modification.
+    if (@{ $sprout->{productions} } == 1){
+        if ($sprout->{productions}[0]{result_set}->_get_num_hits) {
+            if ($sprout->{productions}[0]{negated}) {
+                ### an *empty* result set.
+                $sprout->{result_set} = $result_set;
+            }
+            else {
+                $sprout->{result_set} = $sprout->{productions}[0]{result_set};
+            }
+            return;
         }
-        else {
-            $sprout->{result_set} = $sprout->{productions}[0]{result_set};
-            $sprout->{set_size} = $sprout->{productions}[0]{set_size};
-        }
-        return;
     }
     
     ### Combine the reqlists and neglists for all the productions.  
     ### We do this first so we can filter before we score.
-    foreach my $production (@sorted_productions) {
-        next if $production->{prodtype} eq 'boolop';
+    PRODUCTION: foreach my $production (@sorted_productions) {
+        next PRODUCTION if $production->{prodtype} eq 'boolop';
+        my $prod_result_set = $production->{result_set};
         if ($production->{negated}) {
-            if (%$neglist) {
-                my $more_negations = $production->{result_set};
-                @{ $neglist->{ keys %$more_negations } } 
-                    = values %$more_negations;
+            $neglist = 
+                $prod_result_set->_modify_filterlist($neglist, 'union');
+            next PRODUCTION;
+        }
+        ### If there's no neglist, no reqlist, and no existing result_set...
+        ### simply assign the production's result_set to the aggregate
+        ### result_set, and if the production is required, dupe its doc_num
+        ### list into the reqlist.
+        if  ((!defined $neglist) and (!defined $reqlist) 
+                and !$result_set->_get_num_hits) 
+        {
+            # The if clause shouldn't have been necessary but it
+            # fixed a crashing bug. 
+            $result_set = $prod_result_set 
+                if ($prod_result_set and $prod_result_set->_get_num_hits);
+            
+            if ($production->{required}) {
+                $reqlist = $prod_result_set->_modify_filterlist($reqlist, 'union');
+            }
+            next PRODUCTION;
+        }
+        
+        ### Eliminate negated documents.
+        if (defined $neglist) {
+            $prod_result_set->_apply_filterlist($neglist, 'neg');
+        }
+        
+        ### If there's a pre-existing list of required documents, apply it as
+        ### mask so that the production's result set only includes docs which
+        ### are on the reqlist.
+        if (defined $reqlist) {
+            
+            $prod_result_set->_apply_filterlist($reqlist, 'req');
+        }
+        if (defined $reqlist or defined $neglist) {
+            $prod_result_set->_filter_zero_scores;
+        }
+        
+        if ($production->{required}) {
+            if (defined $reqlist) {
+                $reqlist = $prod_result_set->_modify_filterlist(
+                    $reqlist, 'intersection');
             }
             else {
-                $neglist = $production->{result_set};
+                $reqlist = $prod_result_set->_modify_filterlist(
+                    $reqlist, 'union');
             }
-            next;
-        }
-        unless (%$neglist or %$reqlist or %$result_set) {
-            $result_set = $production->{result_set};
-            $result_set ||= {}; # This shouldn't have been necessary but it
-                                # fixed a crashing bug.
-            if ($production->{required}) {
-                %$reqlist = %$result_set;
+            if ($result_set->_get_num_hits) {
+                $result_set->_apply_filterlist($reqlist, 'req');
+                $result_set->_filter_zero_scores;
             }
-            next;
         }
-        
-        ### Build a routine for deriving a result set from an undetermined
-        ### number of productions, each of which may be required, negated, or
-        ### neither, and which must be sorted either by accumulated score or 
-        ### by date.
-        ### TODO Is it possible to make this less tortured? 
-        my $merged = { '' => undef };
-        my $routine_part1 = q(
-            while (my ($doc_tag, $score_or_string) 
-                = each %{ $production->{result_set} })
-            {
-            );
-        my $routine_part2 = $self->{-sort_by} eq 'score'     ?
-            q(
-                $result_set->{$doc_tag} += $score_or_string;
-            })                                                   :
-            q(
-                $result_set->{$doc_tag} = $score_or_string;
-            });
-
-        if (%$neglist) {
-            $routine_part1 .= q(
-                next if exists $neglist->{$doc_tag};);
+        if ($result_set->_get_num_hits) {
+            my $nh = $result_set->_get_num_hits
+                + $prod_result_set->_get_num_hits;
+            my $np = $result_set->_get_num_pos
+                + $prod_result_set->_get_num_pos;
+            my $rs = Search::Kinosearch::KSearch::ResultSet->new($nh, $np);   
+            my $retval = $result_set->_merge_result_sets($prod_result_set, $rs);
+            $result_set = $retval == 0 ? $rs :
+                          $retval == 1 ? $result_set : 
+                          $prod_result_set;
+            
         }
-        
-        if (%$reqlist) {
-            $routine_part1 .= q(
-                next unless exists $reqlist->{$doc_tag};);
+        else {
+            $result_set = $prod_result_set;
         }
-        
-        ### If there's already a reqlist, AND this production is required,
-        ### then generate a new reqlist consisting of the intersection of the
-        ### two sets.
-        if (%$reqlist and $production->{required}) {
-            $routine_part1 .= q(
-                $merged->{$doc_tag} = undef;); 
-            $routine_part2 .= q(
-                foreach (keys %$result_set) {
-                    delete $result_set->{$_} unless exists $merged->{$_};
-                }
-                $reqlist = $merged;);
-        }
-        
-        elsif ($production->{required}) {
-            $routine_part2 .= q(
-                $reqlist = $production->{result_set};            
-                ### Make %$reqlist evaluate to true, even if it contains no
-                ### docs -- because if you require a term, and it doesn't exist
-                ### in any documents, your query shouldn't return anything.
-                $reqlist->{''} = undef;);
-        }
-
-        eval $routine_part1 . $routine_part2;
-        die $@ if $@;
+#        $result_set = $result_set->_get_num_hits ?
+#                      $result_set->_merge_result_sets($prod_result_set) :
+#                      $prod_result_set;
     }
     $sprout->{result_set} = $result_set;
-    $sprout->{set_size} = scalar keys %$result_set;
 }
 
 sub _retrieve_term_scores {
     my $self = shift;
     my $sprout = shift;
-    my $trunk = shift;
 
-    if (defined $sprout->{productions}) {
-        $self->_retrieve_term_scores($_, $trunk) foreach @{ $sprout->{productions} }
-    }
-    
-    ### We can only retrieve term scores for terms stored in the kindex -- ie,
-    ### not phrases, boolean operators, etc.
-    return unless $sprout->{prodtype} eq 'terminal';
-    
     my $kindex = $self->{kindex};
     my $term = $sprout->{qstring};
-    
-    $sprout->{set_size} = 0;
-    
+
+    my $total_hits = 0;
+    my $total_posdata_len = 0;
     for my $knum (0 .. $#{ $kindex->{subkindexes} }) {
+        my $doc_num_offset = $self->{subk_doc_num_offsets}[$knum];
         my $subkindex = $kindex->{subkindexes}[$knum];
         if (length $term and exists $subkindex->{kinoterms}{$term}) {
             ### The first number in the kinoterms entry has multiple names 
@@ -442,24 +471,20 @@ sub _retrieve_term_scores {
             ### determine the most efficient order in which to process 
             ### productions.
             my %entry;
-            @entry{'doc_freq','offset','filenum'} 
-                = unpack('N N N', $subkindex->{kinoterms}{$term});
+            @entry{ qw(doc_freq offset filenum 
+                       posdata_length posdata_offset posdata_filenum) }
+                = unpack('N*', $subkindex->{kinoterms}{$term});
             $sprout->{kinoterms_entries}[$knum] = \%entry;
-            $sprout->{set_size} += $entry{doc_freq};
+            $total_hits += $entry{doc_freq};
+            $total_posdata_len += $entry{posdata_length};
         }
     }
-    
-    if ($sprout->{set_size} == 0) {
-        ### If we didn't do this, then 'stuff +does_not_exist_in_kindex' would
-        ### return the result set for stuff, rather than an empty list.
-        $sprout->{result_set} = { '' => undef } if $sprout->{required};
-        return;
-    }
 
-    my %result_set;
+    my $result_set = Search::Kinosearch::KSearch::ResultSet->new(
+        $total_hits, $total_posdata_len);
+    $sprout->{result_set} = $result_set;
+    return if $total_hits == 0;
 
-    my $total_doc_freq = $sprout->{set_size};
-    
     my $num_docs = $kindex->{num_docs};
     my $entries_per_kdata_file = $kindex->{entries_per_kdata_file};
     my %scorefields;
@@ -475,236 +500,79 @@ sub _retrieve_term_scores {
     }
 
     ### The +1 makes it possible to discriminate when all docs contain a term.
-    my $idf  = log(($num_docs+1)/$total_doc_freq);
+    my $idf  = log(($num_docs+1)/$total_hits);
     
-    my $bytes = $kindex->{kdata_bytes};
     ### Prepare the multipliers for each field we're going to score on.
     ### We'd have to multiply each hit's score by idf anyway.  It's more
     ### efficient to prepare a single multiplier consisting of weight * idf
     ### than it is to multiply each result by weight and idf separately.
+    ###
+    ### For even more efficiency in the C scoring routines, we convert to an 
+    ### integer to allow integer math instead of float... and multiply by 10
+    ### to minimize truncation errors.
     my %factors;
     while (my ($field, $weight) = each %scorefields) {
-        $factors{$field} = $idf * $weight;
-        $bytes->{$field} = $kindex->{kdata_bytes}{$field};
+        $factors{$field} = int($idf * $weight * 10) + 1;
         croak("Can't score field '$field'") 
-            if ($bytes->{$field} != 2 and $self->{-sort_by} eq 'score');
+            if ($kindex->{kdata_bytes}{$field} != 2 
+                and $self->{-sort_by} eq 'score');
     }
         
-    my $min_sortstring = $trunk->{-min_sortstring};
-    my $max_sortstring = $trunk->{-max_sortstring};
-    my ($min_datestring, $max_datestring);
-    if (defined $trunk->{-min_date}) {
-        my @zeropad = (0) x (6 - @{ $trunk->{-min_date} });
-        ### The extra c at the top will go away when we move to 64bit 
-        ### timestamps.
-        $min_datestring = pack('c n c c c c c', 
-            0, @{ $trunk->{-min_date} }, @zeropad)
-    }
-    if (defined $trunk->{-max_date}) {
-        my @zeropad = (0) x (6 - @{ $trunk->{-max_date} });
-        $max_datestring = pack('c n c c c c c', 
-            0, @{ $trunk->{-max_date} }, @zeropad)
-    }
-    
+    my ($previous_hits, $previous_positions) = (0,0);
     SUBKINDEX: for my $knum (0 .. $#{ $kindex->{subkindexes} }) {
         next unless (exists $sprout->{kinoterms_entries}[$knum]
             and defined $sprout->{kinoterms_entries}[$knum]);
         my $subkindex = $kindex->{subkindexes}[$knum];
+        my $doc_num_offset = $self->{subk_doc_num_offsets}[$knum];
+        my $kinoterms_entry = $sprout->{kinoterms_entries}[$knum];
         
-        my $doc_freq = $sprout->{kinoterms_entries}[$knum]{doc_freq};
+        my $packed_kinodata_ref;
+        ### Read the relevant sections of kinodata into the ResultSet object.
+        $packed_kinodata_ref = $kindex->_read_kinodata( $subkindex, 'doc_num', 
+            @{ $kinoterms_entry }{'filenum','offset','doc_freq'});
+        $result_set->_set_KDfield_str('doc_num', $packed_kinodata_ref, 
+            $previous_hits, $doc_num_offset, 4, 1);
 
-        my $scorefile_num =
-            $sprout->{kinoterms_entries}[$knum]{filenum};
-        ### offset in this context refers to the start point for 
-        ### relevant data in the binary .kdt file.
-        my $offset = $sprout->{kinoterms_entries}[$knum]{offset};
+        $packed_kinodata_ref = $kindex->_read_kinodata( $subkindex, 'posaddr',
+            @{ $kinoterms_entry }{'filenum','offset','doc_freq'});
+        $result_set->_set_KDfield_str('posaddr', $packed_kinodata_ref, 
+            $previous_hits, 0, 2, 1);
         
-        my $lines_to_grab = $doc_freq;
-        my $starts_and_lengths = [ $scorefile_num, $offset, $doc_freq ];
-
-        ### limit the addresses of data to be read to data within the
-        ### sortstring range.
-        if (defined $min_sortstring or defined $max_sortstring) {
-            $starts_and_lengths = &_analyze_range_query( 
-                $self, $subkindex, 'sortstring', $min_sortstring, $max_sortstring, 
-                $starts_and_lengths);
-        }
-        ### limit the addresses of data to be read to data within the
-        ### datetime range.
-        if (defined $min_datestring or defined $max_datestring) {
-            $starts_and_lengths = &_analyze_range_query( 
-                $self, $subkindex, 'datetime', $min_datestring, $max_datestring, 
-                $starts_and_lengths);
+        $packed_kinodata_ref = $kindex->_read_kinodata( $subkindex, 'posdata',
+            @{ $kinoterms_entry }{'posdata_filenum','posdata_offset',
+                'posdata_length'});
+        $result_set->_set_KDfield_str('posdata', $packed_kinodata_ref, 
+            $previous_hits, 0, 4, 1);
+        #$result_set->_set_posdata($packed_kinodata_ref, $previous_positions);
+        
+        if ($kindex->{datetime_enabled}) {
+            $packed_kinodata_ref = $kindex->_read_kinodata( 
+                $subkindex, 'datetime', 
+                @{ $kinoterms_entry }{'filenum','offset','doc_freq'});
+            my @stuff = unpack('C*', $$packed_kinodata_ref);
+            $result_set->_set_KDfield_str('datetime', $packed_kinodata_ref, 
+                $previous_hits, 0, 8, 0);
         }
         
-        my %packed_data;
-        $packed_data{$_} = '' for @scorefields_arr;
-        my $packed_doc_nums = ''; 
-        my $packed_datetimes = '';
-        ### Retrieve the relevant section of kinodata, from multiple files 
-        ### if necessary. 
-        while (@$starts_and_lengths) {
-            my @args = splice(@$starts_and_lengths,0,3);
-            for my $scorefield (@scorefields_arr) {
-                $packed_data{$scorefield} .= $kindex->_read_kinodata(
-                    $subkindex, $scorefield, @args);
-            }
-            $packed_doc_nums .= $kindex->_read_kinodata(
-                $subkindex, 'doc_num', @args);
-            if ($self->{-sort_by} eq 'datetime') {
-                $packed_datetimes .= $kindex->_read_kinodata(
-                    $subkindex, 'datetime', @args);
-            }
+        for my $scorefield (@scorefields_arr) {
+            $packed_kinodata_ref = 
+                $kindex->_read_kinodata( $subkindex, $scorefield,
+                    @{ $kinoterms_entry }{'filenum','offset','doc_freq'});
+            $result_set->_add_up_scores($packed_kinodata_ref,
+                $factors{$scorefield}, $previous_hits);
         }
-        next SUBKINDEX unless length($packed_doc_nums);
         
-        ### The temp templates are needed for perl 5.6 compatibility.
-        ### (instead of using unpack("($kinodata_template)*" ...
-        my $reps = length($packed_doc_nums)/4;
-        my $temp_dnum_tpt = "a4 " x $reps;
-        my %temp_templates;
-        if ($self->{-sort_by} eq 'score') {
-            $temp_templates{$_} = 'n ' x $reps 
-                for @scorefields_arr;
-        }
-        else {
-            $temp_templates{$_} = "a$bytes->{$_} " x $reps 
-                for (@scorefields_arr, 'datetime');
-        }
-        my $packed_kindexnum = pack ('C', $knum);
-
-        my $first_sf = $scorefields_arr[0];
-        my $scores
-            = [ unpack($temp_templates{$first_sf}, $packed_data{$first_sf}) ];
-        ### If the search specifies more than one field, we have to add up the
-        ### scores for each field.
-        if (@scorefields_arr > 0) {
-            my $new_scores = [];
-            for my $scorefield (@scorefields_arr[1 .. $#scorefields_arr]) {
-                my $factor = $factors{$scorefield};
-                ### This if/else is only for efficiency's sake.
-                ### The only difference is multiplying by $factor.
-                if ($self->{-sort_by} eq 'score' and $factor != 1) {
-                    @$new_scores = 
-                        map { $_ * $factor + shift @$scores } 
-                            unpack($temp_templates{$scorefield}, 
-                                   $packed_data{$scorefield});
-                    $scores = $new_scores;
-                    $new_scores = []; 
-                }
-                else {
-                    @$new_scores = 
-                        map { $_ + shift @$scores } 
-                            unpack($temp_templates{$scorefield}, 
-                                   $packed_data{$scorefield});
-                    $scores = $new_scores;
-                    $new_scores = []; 
-                }
-            }
-        }
-        if ($self->{-sort_by} eq 'score') {
-            @result_set{ 
-                    map { "$packed_kindexnum$_" } 
-                    unpack($temp_dnum_tpt, $packed_doc_nums) 
-                } = @$scores;
-        }
-        ### If it's a sort by datetime AND -fields is specified...
-        elsif (ref $sprout->{-fields} and %{ $sprout->{-fields} }) {
-            my @doc_nums = unpack($temp_dnum_tpt, $packed_doc_nums);
-            my @datetimes 
-                = unpack($temp_templates{datetime}, $packed_datetimes);
-            for (@$scores) {
-                if ($_ == 0) {
-                    shift @datetimes;
-                    shift @doc_nums;
-                    next;
-                }
-                $result_set{ $packed_kindexnum . shift @doc_nums } 
-                    = shift @datetimes;
-            }
-        }
-        ### If it's sort by datetime, but we're using aggscore so all docs are
-        ### definitely relevant...
-        else {
-            @result_set{ 
-                    map { "$packed_kindexnum$_" } 
-                    unpack($temp_dnum_tpt, $packed_doc_nums) 
-                } = unpack($temp_templates{datetime}, $packed_datetimes);
-        }
-            
+        $previous_hits += $kinoterms_entry->{doc_freq};
+        $previous_positions += $kinoterms_entry->{posdata_length};
     }
     ### We only have to filter if -fields has been specified.
     if ($self->{-sort_by} eq 'score' 
         and ref $sprout->{-fields} 
         and %{ $sprout->{-fields} }) 
     {
-        while (my ($doc_tag, $score) = each %result_set) { 
-            delete $result_set{$doc_tag} if $score == 0;
-        }
+        $result_set->_filter_zero_scores;
     }
-    $sprout->{result_set} = \%result_set;
-}
-
-### Limit the amount of data to be read by the to sections of kinodata which
-### match a string range criteria.  
-sub _analyze_range_query {
-    my ($self, $subkindex, $field, $min, $max, $starts_and_lengths) = @_;
-    my $kindex = $self->{kindex};
-    my $entries_per_kdata_file = $kindex->{entries_per_kdata_file};
-    my $bytes = $kindex->{kdata_bytes}{$field};
-
-    $min = defined $min ?  $min : ("\0" x $bytes);
-    $max = defined $max ?  $max : ("\377" x $bytes);
-
-    use bytes;
-    my $len = length($min);
-    if ($len == $bytes) { ; }
-    elsif ($len < $bytes) {
-        $min .= "\0" x ($bytes - $len);
-    }
-    elsif ($len > $bytes) {
-        $min = substr($min, 0, $bytes);
-    }
-    $len = length($max);
-    if ($len == $bytes) { ; }
-    elsif ($len < $bytes) {
-        $max .= "\377" x ($bytes - $len);
-    }
-    elsif ($len > $bytes) {
-        $max = substr($max, 0, $bytes);
-    }
-
-    my @s_a_l;
-    while (@$starts_and_lengths) {
-        my ($fnum, $offs, $len) = splice(@$starts_and_lengths,0,3);
-        my $packed_data = $kindex->_read_kinodata(
-            $subkindex, $field, $fnum, $offs, $len);
-        my $was_in_range = 0;
-        my $st;
-        my $fn = $fnum;
-        ### TODO test for perl version when creating template.
-        my $template = "a$bytes " x $len;
-        for (unpack($template, $packed_data)) {
-            ++$offs;
-            if ($was_in_range) {
-                next unless ($_ lt $min or $_ gt $max);
-                my $l = ($offs-1) - $st;
-                push @s_a_l, ($fn, $st, $l);
-                $was_in_range = 0; 
-            }
-            else {
-                next unless ($_ ge $min and $_ le $max);
-                $st = ($offs - 1) % $entries_per_kdata_file;
-                $fn = $fnum + int($offs/$entries_per_kdata_file);
-                $was_in_range = 1;
-            }
-        } 
-        if ($was_in_range) {
-            my $l = $offs - $st;
-            push @s_a_l, ($fn, $st, $l);
-        }
-    }
-    return \@s_a_l;
+    $sprout->{result_set} = $result_set;
 }
 
 sub fetch_hit_hashref {
@@ -713,24 +581,6 @@ sub fetch_hit_hashref {
         return $ranked_result->{fields};
     }
 }
-
-##############################################################################
-### Create a list of terms to be used for highlighting later.
-##############################################################################
-sub _create_searchterm_list {
-    my $self = shift;
-    my $sprout = shift;
-    my $trunk = shift;
-
-    if ($sprout->{prodtype} eq 'terminal') {
-        push @{ $self->{searchterms} }, $sprout->{qstring}
-            if (!$trunk->{fields} 
-                or exists $trunk->{fields}{"$self->{excerpt_field}"});
-    }
-    return unless defined $sprout->{productions};
-    $self->_create_searchterm_list($_, $trunk) for @{ $sprout->{productions} };
-}
-
 
 ##############################################################################
 ### Create a relevant excerpt from a document, with search terms highlighted
@@ -760,18 +610,10 @@ sub _create_excerpt {
     @locations{@$posits} = (0) x @$posits if @$posits;
     my $fieldnumber = 0;
     for (@{ $self->{kindex}{fields_sort} }) {
-        last if $_ eq '$fieldname';
+        last if $_ eq $fieldname;
         $fieldnumber++;
     }
-    ### Create a hash where the keys are all position markers indicating the
-    ### start of a keyword.
-#    foreach my $term (@{ $self->{searchterms} }) {
-#        my $packed_position_data = $kinoprox_entry->{$fieldnumber}{$term};
-#        if (defined $packed_position_data) {
-#            my @positions = unpack("N*", $packed_position_data);
-#            @locations{@positions} = (0) x @positions;
-#        }
-#    }
+
     my @sorted_positions;
     if (%locations) {
         @sorted_positions = sort { $a <=> $b } keys %locations;
@@ -822,16 +664,18 @@ sub _create_excerpt {
     }
     
     my $max_chop = ((2*$excerpt_length) > $substring_length) ?
-                   ($substring_length - $excerpt_length) : $excerpt_length;
+                   #($substring_length - $excerpt_length) : $excerpt_length;
+                   ($excerpt_length - $substring_length) : $excerpt_length;
     for ($excerpt) {
         my $l = length;
 
         ### If the best_loc is near the end, make the excerpt surround it
         if ($best_loc > 3*$l/4) {
-            my $st = ($l - $excerpt_length) < 0 ?
+            my $st = ($l - $excerpt_length) > 0 ?
                      ($l - $excerpt_length) : 0;
-            $_ = substr($_, ($l - $excerpt_length), $excerpt_length);
+            $_ = substr($_, $st, $excerpt_length);
             unless ($start == 0) {
+                no bytes;
                 s/^\W*$tokenreg(\W*)//;
                 unless (index($1, '.') > -1) {
                     $excerpt = '... ' . $excerpt;
@@ -846,9 +690,10 @@ sub _create_excerpt {
         else {
             ### Try to start the excerpt at the beginning of a sentence.
             unless ($best_loc == 0 or $start == 0) {
+                no bytes;
                 s/^\W*$tokenreg//;
-                unless (s/^.{0,$max_chop}\.//s) {
-                    $excerpt = '... ' . $excerpt;
+                unless (s/^.{0,$max_chop}\.//s) { 
+                    $excerpt = '... ' . $excerpt;  # vim highlighting hack: )
                 }
             }
             my $diff = $l - length;
@@ -859,14 +704,16 @@ sub _create_excerpt {
             $_ = substr($_, 0, $excerpt_length + 20);
             
             ### Clear out partial words.
-            my $l2 = length;
-            /($tokenreg\W*)$/;
-            unless ($best_loc + length($1) eq $l2) {
-                s/(\W*)$tokenreg\W*$/$1/;
+            {
+                no bytes;
+                if (/$tokenreg$/) {
+                    s/(\W*)$tokenreg$/$1/;
+                }
             }
         }
         
         ### If the excerpt doesn't end with a full stop, end with an an ellipsis.
+        no bytes;
         unless (/\.\s*$/s) {
             s/\W+$/ .../s;
         }
@@ -874,8 +721,8 @@ sub _create_excerpt {
     ### Traverse the excerpt from back to front, inserting highlight tags.
     if ($hl_tag_open) {
         foreach my $loc (sort {$b <=> $a} @relative_locations) {
-           $excerpt =~
-               s/^(.{$loc})($tokenreg)/$1$hl_tag_open$2$hl_tag_close/sm;
+            $excerpt =~
+               s/^(\C{$loc})($tokenreg)/$1$hl_tag_open$2$hl_tag_close/sm;
             
         }
     }
@@ -883,10 +730,10 @@ sub _create_excerpt {
     return $excerpt;
 }
 
-
 1;
 
 __END__
+__POD__
 
 =head1 NAME
 
@@ -1143,7 +990,8 @@ parameter.
 
 =item score
 
-The document's numerical score.
+The document's numerical score.  This will be 1 for the top hit and between 0
+and 1 for all other hits.
 
 =back
 

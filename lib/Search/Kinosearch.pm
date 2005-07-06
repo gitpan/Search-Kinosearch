@@ -2,7 +2,7 @@ package Search::Kinosearch;
 use strict;
 use warnings;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03_02';
 
 ### Coding convention:
 ### Public methods use hash style parameters except when to do so would cause 
@@ -239,7 +239,19 @@ Fast, efficient algorithms for both indexing and searching
 
 =item
 
+Field-specific queries
+
+=item
+
 Works well with large or small document collections
+
+=item
+
+Incremental indexing
+
+=item
+
+mod_perl optimizations
 
 =begin comment
 
@@ -279,9 +291,9 @@ Kindexer performs an analogous role -- using the interface tools provided by
 the KSearch module, you consult the kindex to find which documents within the
 document collection Kinosearch considers most relevant to your query. 
 
-[The Search::Kinosearch module itself doesn't do very much, and as an abstract
-base class, it does nothing on its own; this documentation is an overview
-which ties together the various components of the Kinosearch suite.]  
+[The Search::Kinosearch module itself doesn't do very much, and does nothing
+on its own; this documentation is an overview which ties together the various
+components of the Kinosearch suite.]  
 
 The Kindexer thinks of your documents as database rows, each with as many
 fields as you define.  HTML documents might be parsed, prepared, and fed to
@@ -371,9 +383,9 @@ is a central design goal of Kinosearch.
 The single most important optimization available for Kinosearch apps is to
 store either some or all of the kindex files in ram -- in particular, the
 files stored within the directory specified by the '-freqpath' parameter.
-These files contain all of the kindex data upon which search-time speed
-depends.  Storing the other kindex files in ram won't hurt, but will not yield
-anywhere near the same benefit.
+These files contain the data upon which has the greatest impact upon
+search-time speed.  Storing the other kindex files in ram won't hurt, but will
+not yield anywhere near the same benefit.
 
 An additional search-time optimization is available when running Kinosearch
 applications under mod_perl.  See the
@@ -384,27 +396,13 @@ details.
 
 A "stoplist" is collection of "stopwords": words which are common enough to be
 of little use when determining search results.  For example, so many documents
-in English contain "the", "if", and "maybe" that it is best if they are
-blocked, not just at search time, but at index time.  Removing them from the
-equation saves time and space, plus improves relevance.  
-
-By default, the Kindexer excludes a small list of stopwords from the kindex
-and KSearch reports when it detects any of them in a search query.  It is
-possible to disable the stoplist or use a different one, if you so desire.
-
-=head2 Phrase Matching Algorithm
-
-Kinosearch's phrase matching implementation involves storing concatenated
-pairs of words in the kindex.  This strategy yields a substantial performance
-benefit at search time (since the extremely fast hash-based algorithm used to
-scan for individual terms can be extended to detect phrases as well), but at
-the cost of increased kindex size.  Blocks of text are broken into
-overlapping couplets, which are stored as individual terms in the kindex --
-e.g. the text "brush your teeth" produces four kindex entries: "brush",
-"teeth", "brush your", and "your teeth" ("your" on its own is a stopword, so
-it is excluded from the kindex by default).  If a user searches for the the
-specific phrase "brush your teeth", Kinosearch will return only documents
-which contain I<both> "brush your" and "your teeth".  
+in English contain "the", "if", and "maybe" that it typically improves both
+performance and relevance to block them at search time.  (Some search engine
+libaries also exclude stopwords during the indexing process to save space;
+Kinosearch always indexes all terms, because if it did not, phrase matching,
+excerpt generation, and excerpt highlighting would break.)  It is possible to
+disable the default stoplist used by KSearch or specify a different one, if
+you so desire.
 
 =head2 Ranking Algorithm
 
@@ -429,7 +427,6 @@ rank higher than a 1000-word text which also contains one occurrence of each.
 
 A web search for "tf idf" will turn up many excellent explanations of the
 algorithm.
-
 
 =begin comment
 
@@ -498,23 +495,23 @@ documentation for Kindexer's define_field() method for more details.
 
 =item
 
-Implement data compression methods.
-
-=item
-
 Refine the API.
 
 =item
 
-Dispense with DB_File and implement a composite index format.
+Increase use of data compression.
 
 =item
 
-Shrink proximity data.
+Dispense with DB_File altogether.
 
 =item
 
-Enable range queries.
+Implement a composite index format.
+
+=item
+
+Enable multi-lingual support.
 
 =item
 
@@ -523,11 +520,6 @@ Enable customizable tokenizing and stemming.
 =item
 
 Implement docrank.
-
-=item
-
-Fix excerpt highlighting for phrases so that a search for 'we the people'
-doesn't cause every instance of 'the' to be highlighted.
 
 =item
 
@@ -575,12 +567,6 @@ where no Snowball stemmer is available.
 =item
 
 Excerpt may be up to 20 characters longer than requested. 
-
-=item
-
-Spurious results can turn up in searches for phrases 3
-terms or longer: for instance, a document containing "I<brush your> hair and
-floss I<your teeth>" will be returned in a search for '"brush your teeth"'.
 
 =back
 

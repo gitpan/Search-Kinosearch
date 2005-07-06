@@ -3,6 +3,7 @@ use strict;
 use warnings;
 
 use attributes 'reftype';
+use Search::Kinosearch::KSearch::ResultSet;
 
 use Carp;
 
@@ -32,8 +33,8 @@ my %init_query_defaults = (
     -min_date       => undef, 
     -max_date       => undef,
     productions     => undef,
-    set_size        => 0,
     prodtype        => 'query',
+    result_set      => undef, # to be defined...
 );
 
 ##############################################################################
@@ -57,6 +58,7 @@ sub _init_query {
     $self->{required} = $self->{-required};
     $self->{negated}  = $self->{-negated};
     
+#    $self->{result_set} = Search::Kinosearch::KSearch::ResultSet->new(0,0);
 }
 
 package Search::Kinosearch::Query::Compound;

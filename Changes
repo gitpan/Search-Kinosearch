@@ -1,4 +1,9 @@
-Revision history for Perl extension Search::Kinosearch.
+Revision history for Search::Kinosearch.
+
+0.03
+    - Rewrite rank-sort algo in C.
+    - Completely change how positional data is stored.
+    - Add requirement for Perl 5.8.0
 
 0.02
     - Fixed missing true value at the end of QueryParser.pm

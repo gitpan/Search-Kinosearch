@@ -4,6 +4,7 @@ lib/Search/Kinosearch/Doc.pm
 lib/Search/Kinosearch/Kindex.pm
 lib/Search/Kinosearch/Kindexer.pm
 lib/Search/Kinosearch/KSearch.pm
+lib/Search/Kinosearch/KSearch/ResultSet.pm
 lib/Search/Kinosearch/Lingua.pm
 lib/Search/Kinosearch/Lingua/En.pm
 lib/Search/Kinosearch/Lingua/Es.pm

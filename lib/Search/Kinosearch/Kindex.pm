@@ -47,8 +47,9 @@ sub init_kindex {
     $self->{kdata_bytes}     = {
         doc_num => 4,
         aggscore => 2,
-        sortstring => 0,
         datetime => 0,
+        posaddr => 2,
+        posdata => 4,
         };
     $self->{kinodel} = {};
     
@@ -101,8 +102,6 @@ sub init_kindex {
         $self->{kinodel} = retrieve($kinodel_path) if -e $kinodel_path;
         
         @{ $self }{ keys %$kinostats } = values %$kinostats;
-        $self->{kdata_bytes}{sortstring} = $self->{sortstring_bytes};
-        $self->{kdata_bytes}{datetime} = $self->{datetime_enabled} ? 8 : 0;
         
         my $field_defs = $self->{field_defs};
          $self->define_field(%{ $field_defs->{$_} }) for keys %$field_defs;
@@ -128,6 +127,9 @@ sub init_kindex {
                     mpath     => $mpath,
                     fpath     => $fpath,
                     );
+        }
+        if ($self->{datetime_enabled}) {
+            $self->{kdata_bytes}{datetime} = 8;
         }
     }
 }
@@ -165,7 +167,7 @@ sub define_field {
         unless $params{-name} =~ /^[a-zA-Z_]+$/;
     my $fieldname = $params{-name};
     if (exists $self->{fields}{$fieldname}
-        or $fieldname =~ /^(?:score|excerpt|aggscore|datetime|sortstring)$/) 
+        or $fieldname =~ /^(?:score|excerpt|aggscore|datetime)$/) 
     {
         croak("The name '$fieldname' is already reserved. Please "
             . "choose a different one.");
@@ -182,12 +184,12 @@ sub define_field {
             = sort @{ $self->{"fields_$_"} }, $fieldname;
     }
     if ($params{-score}) {
-        @{ $self->{fields_kdata} } = ('sortstring', 'datetime', 'doc_num',
+        @{ $self->{fields_kdata} } = ('datetime', 'doc_num',
             'aggscore', @{ $self->{fields_score} });
         $self->{kdata_bytes}{$fieldname} = $params{-kdata_bytes};
     }
     $self->{fieldweights}{$fieldname} = $params{-weight};
-    $self->{norm_divisor} = 0;
+    $self->{norm_divisor} = 1;
     $self->{norm_divisor} += $self->{fieldweights}{$_}
         for @{ $self->{fields_score} };
 }
@@ -197,12 +199,14 @@ sub define_field {
 ### if necessary. 
 ##############################################################################
 sub _read_kinodata {
-    my ($self, $kindex, $scorefield, 
-        $scorefile_num, $start, $lines_to_grab) = @_;
-    my $entries_per_kdata_file = $self->{entries_per_kdata_file};
+    my ($self, $kindex, $scorefield, $scorefile_num, $start, 
+        $lines_to_grab) = @_;
     my $bytes_per_entry = $self->{kdata_bytes}{$scorefield};
-    return '' unless $bytes_per_entry;
     my $packed_data = '';
+    return \$packed_data unless $bytes_per_entry;
+    
+    my $entries_per_kdata_file = $self->{entries_per_kdata_file};
+    my $prev_datalength = 0;
     while ($lines_to_grab) {
         ### If all the (remaining) data is in one .kdt file, and doesn't cross 
         ### boundaries...
@@ -211,11 +215,9 @@ sub _read_kinodata {
         {       
             my $relative_start = $start % $entries_per_kdata_file;
             my $fh = $kindex->{kinodata}{$scorefield}{$scorefile_num}{handle};
-            seek $fh, ( $relative_start * $bytes_per_entry ), 0;
-            my $packed_data_temp;
-            read ($fh, $packed_data_temp, 
-                ( $lines_to_grab * $bytes_per_entry ));
-            $packed_data .= $packed_data_temp;
+            seek $fh, ( $relative_start * $bytes_per_entry ), 0 or confess $!;
+            read ($fh, $packed_data, 
+                ( $lines_to_grab * $bytes_per_entry ), $prev_datalength);
             last;   
         }       
         ### If the data is spread over multiple files...
@@ -226,18 +228,17 @@ sub _read_kinodata {
         
             last if !exists $kindex->{kinodata}{$scorefield}{$scorefile_num};
             my $fh = $kindex->{kinodata}{$scorefield}{$scorefile_num}{handle};
-            seek $fh, ( $relative_start * $bytes_per_entry ), 0;
-            my $packed_data_temp;
-            read ($fh, $packed_data_temp, 
-                ( $num_to_read * $bytes_per_entry ));
-            $packed_data .= $packed_data_temp;
+            seek $fh, ( $relative_start * $bytes_per_entry ), 0 or confess $!;
+            read ($fh, $packed_data, 
+                ( $num_to_read * $bytes_per_entry ), $prev_datalength);
 
             $scorefile_num++;
             $start = 0;
             $lines_to_grab -= $num_to_read;
+            $prev_datalength = length $packed_data;
         }       
     }
-    return $packed_data;
+    return \$packed_data;
 }
 
 package Search::Kinosearch::SubKindex;
@@ -300,20 +301,12 @@ sub init_subkindex {
         
     }
     
-    ### Initialize all the tied hash dbs. 
+    ### Initialize all the tied dbs. 
     my $flags = $self->{mode} eq 'create' ?  
                 (O_CREAT | O_RDWR | O_EXCL) : 
                 $self->{mode} eq 'update' ?   
                 (O_RDWR) : (O_RDONLY);
-#    for my $component (qw( kinodocs kinoids kinoterms )) {
-#        my $path = $component eq 'kinoterms' ?
-#                   File::Spec->catfile($self->{fpath}, $component) : 
-#                   File::Spec->catfile($self->{mpath}, $component);
-#        $self->{$component} = {};
-#        tie %{ $self->{$component} }, 'DB_File', $path, $flags
-#                or croak("Can't init tied db hash '$path': $!");
-#    }
-     tie %{ $self->{kinodocs} }, 'DB_File',
+     tie @{ $self->{kinodocs} }, 'Search::Kinosearch::TiedArray',
          File::Spec->catfile($self->{mpath}, 'kinodocs'), 
          $flags; 
      tie %{ $self->{kinoids} }, 'DB_File',
@@ -322,6 +315,193 @@ sub init_subkindex {
      tie %{ $self->{kinoterms} }, 'DB_File',
          File::Spec->catfile($self->{fpath}, 'kinoterms'), 
          $flags; 
+}
+
+package Search::Kinosearch::TiedArray;
+use strict;
+use warnings;
+
+use base 'Tie::Array';
+use Carp;
+use File::Spec;
+use Fcntl qw(:DEFAULT :flock);
+
+
+### This class is only used for the kinodocs array of stored documents.  
+### It breaks up index and data into multiple files to allow huge amounts of
+### data to be stored.  The number of entries is constrained by integer
+### accuracy in Perl. 
+
+### Deleted documents are not removed, but the pointer to the is discarded.
+### They only go away for real when the kindex is rewritten.
+
+use constant DATASTART => 8;
+use constant MAXDATAFILESIZE => 2 ** 31;         # 2 Gbyte
+use constant MAXINDEXFILESIZE => (2 ** 27) * 12; # 1.5 Gbyte
+use constant INDEXLENGTH => 12;
+use constant INDEXDIV => 2 ** 27; # MAXINDEXFILESIZE / INDEXLENGTH
+my $deletemarker = "\0" x INDEXLENGTH;
+
+use bytes;
+
+sub TIEARRAY {
+    my $class = shift;
+    my $basepath = shift;
+    my $flags = shift || O_RDONLY; 
+    ### This shouldn't ever happen, since this class isn't public.
+    confess ("Internal error opening $basepath") 
+        unless (defined $basepath and defined $flags);
+    my $self = bless {}, ref $class || $class;
+    $self->{data_filehandles} = [];
+    $self->{index_filehandles} = [];
+    
+    ### Detect and open existing files.
+    $self->{basepath} = $basepath;
+    $self->{flags} = $flags;
+    (undef, @{$self}{'basedir','basename'}) 
+        = File::Spec->splitpath($basepath);
+    croak("Filename cannot end in a number") 
+        if $self->{basename} =~ /\d$/;
+    opendir BASEDIR, $self->{basedir}
+        or croak("Couldn't open directory '$self->{basedir}': $!");
+    my @datanums = grep { m#$self->{basename}\d+\.dat# } readdir BASEDIR;
+    my @indexnums = grep { m#$self->{basename}\d+\.idx# } readdir BASEDIR;
+    closedir BASEDIR;
+    s/.*?(\d+)\.dat$/$1/ for @datanums;
+    s/.*?(\d+)\.idx$/$1/ for @indexnums;
+    for (@datanums) {
+        my $fh; 
+        my $path = "$self->{basename}$_.dat";
+        $path = File::Spec->catfile($self->{basedir}, $path);
+        sysopen($fh, $path, $flags) or croak("Couldn't open '$path': $!");
+        $self->{data_filehandles}[$_] = $fh;        
+    }
+    for (@indexnums) {
+        my $fh; 
+        my $path = "$self->{basename}$_.idx";
+        $path = File::Spec->catfile($self->{basedir}, $path);
+        sysopen($fh, $path, $flags) or croak("Couldn't open '$path': $!");
+        $self->{index_filehandles}[$_] = $fh;        
+    }
+    
+    ### If there aren't any existing files, start new ones.
+    $self->{data_filehandles}[0]  ||= $self->_new_datafile(0);
+    $self->{index_filehandles}[0] ||= $self->_new_indexfile(0);
+        
+    my $max_index_num = $#{ $self->{index_filehandles} };
+    my $index_fh = $self->{index_filehandles}[$max_index_num];
+    seek($index_fh, 0, 2); # EOF
+    my $pos = tell $index_fh;
+    $self->{max_index} = 
+        ( $max_index_num * ( MAXINDEXFILESIZE / INDEXLENGTH ) )
+        + ( $pos / INDEXLENGTH ) - 1;
+    $self->{max_index} = $self->{max_index} == -1 ? 
+                         undef : $self->{max_index};
+    return $self;
+}
+
+sub FETCH {
+    my ($self, $index) = (shift, shift);
+    my $delete_me = shift || '';
+    return if (!defined $self->{max_index} or $index > $self->{max_index});
+    my $index_num = int( $index / INDEXDIV );
+    my $index_loc = ($index % INDEXDIV) * 12;
+    my $index_fh = $self->{index_filehandles}[$index_num];
+    seek($index_fh, $index_loc, 0);
+    my $packed_index_info = '';
+    read($index_fh, $packed_index_info, INDEXLENGTH);
+    ### If all nulls, this is a deleted entry.
+    return undef if ($packed_index_info eq $deletemarker);
+    if ($delete_me) {
+        seek($index_fh, $index_loc, 0);
+        print $index_fh $deletemarker or confess;
+    }
+    my ($data_filenum, $data_offset, $data_length) 
+        = unpack("N N N", $packed_index_info);
+    my $data_fh = $self->{data_filehandles}[$data_filenum];
+    seek($data_fh, $data_offset, 0);
+    my $value;
+    read($data_fh, $value, $data_length);
+    return $value;
+}
+
+sub STORE {
+    my ($self, $index, $value) = @_;
+
+    confess("Internal error") 
+        if (defined $self->{max_index} and $index > $self->{max_index} + 1);
+
+    my $data_length = length($value); 
+    my $data_fh_num = $#{ $self->{data_filehandles} };
+    my $data_fh = $self->{data_filehandles}[$data_fh_num];
+    seek($data_fh, 0, 2); # EOF;
+    my $data_start = tell $data_fh;
+    if ($data_start + $data_length > MAXDATAFILESIZE) {
+        $data_fh_num++;
+        $data_start = DATASTART;
+        $data_fh = $self->_new_datafile($data_fh_num);
+    }
+    print $data_fh $value;
+    
+    my $index_num = int( $index / INDEXDIV );
+    my $index_loc = ($index % INDEXDIV) * 12;
+    my $index_fh = 
+        $self->{index_filehandles}[$index_num] 
+            ||= $self->_new_indexfile($index_num);
+    seek ($index_fh, $index_loc, 0);
+    print $index_fh 
+        (pack('N N N ', $data_fh_num, $data_start, $data_length));
+    $self->{max_index} = $index 
+        if (!defined $self->{max_index} or $index > $self->{max_index});
+}
+
+sub DELETE {
+    my ($self, $index) = @_;
+    return $self->FETCH($index, 'deleteme');
+}
+
+sub EXISTS {
+    my $self = shift;
+    my $index = shift;
+    if (defined $self->{max_index} and $index <= $self->{max_index}) {
+        return 1;
+    }
+    else { 
+        return undef;
+    }
+}
+
+sub CLEAR       { confess "Unimplemented" }
+sub EXTEND      { confess "Unimplemented" }
+sub SPLICE      { confess "Unimplemented" }
+sub SHIFT       { confess "Unimplemented" }
+sub UNSHIFT     { confess "Unimplemented" }
+sub POP         { confess "Unimplemented" }
+sub STORESIZE   { confess "Unimplemented" }
+
+sub FETCHSIZE   { shift->{max_index} }
+
+sub DESTROY {
+    my $self = shift;
+    close $_ for @{ $self->{index_filehandles} };
+    close $_ for @{ $self->{data_filehandles} };
+}
+
+sub _new_datafile {
+    my ($self, $data_fh_num) = @_; 
+    my $fh;
+    sysopen($fh, "$self->{basepath}$data_fh_num.dat", $self->{flags});
+    $self->{data_filehandles}[$data_fh_num] = $fh;
+    print $fh "\0" x DATASTART 
+        unless ($self->{flags} & O_RDONLY) eq O_RDONLY;
+    return $fh;
+}
+
+sub _new_indexfile {
+    my ($self, $index_num) = @_; 
+    my $fh;
+    sysopen($fh, "$self->{basepath}$index_num.idx", $self->{flags});
+    return $fh;
 }
 
 1;

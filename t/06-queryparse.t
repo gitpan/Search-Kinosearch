@@ -2,10 +2,11 @@
 
 use lib 'lib';
 
+$|++;
 use strict;
 use warnings;
 
-use Test::More tests => 452;
+use Test::More tests => 460;
 use Test::Exception;
 use File::Spec;
 use File::Path qw( rmtree );
@@ -95,6 +96,7 @@ my @configs = (
 );
 
 my @logical_tests = (
+    
     'b'         => [ 3,3,  3,3,  3,3,  3,3 ],
     '(a)'       => [ 4,4,  4,4,  4,4,  4,4 ],
     '"a"'       => [ 4,4,  4,4,  4,4,  4,4 ],
@@ -117,7 +119,8 @@ my @logical_tests = (
     'a "b c"'   => [ 4,2,  4,2,  4,2,  4,2 ],
     'a ("b c")' => [ 4,2,  4,2,  4,2,  4,2 ],
     'a "(b c)"' => [ 4,2,  4,2,  4,2,  4,2 ],
-    
+    '"a b c"'   => [ 2,2,  2,2,  4,2,  4,2 ],
+   
     '-x'        => [ 5,5,  5,5,  5,5,  5,5 ], # Should really be 0,0.
     'x -c'      => [ 3,3,  5,2,  3,3,  5,2 ],
     'x "-c"'    => [ 5,2,  5,2,  5,2,  5,2 ],
@@ -144,7 +147,7 @@ my @logical_tests = (
     'x AND (y OR c)'    => [ 2,2,  6,0,  2,2,  6,0 ],
     
     'a AND NOT (b OR "c d")' => [ 1,1,  4,1,  1,3,  4,1 ],
-    'a AND NOT "a b"'        => [ 1,1,  4,3,  3,3,  4,3 ],
+    'a AND NOT "a b"'        => [ 1,1,  4,3,  3,0,  4,3 ],
     'a AND NOT ("a b" OR "c d")' => [ 1,1,  4,1,  0,3,  4,1 ],
 
     '+"b c" -d'  => [ 1,1,  2,1,  2,1,  3,1 ],
@@ -209,6 +212,8 @@ for (my $i = 0; $i <= $#syntax_tests; $i += 2) {
 sub test_ksearch_response {
     my ($query, $responses) = @_;
     for (0 .. $#$responses) {
+     #   warn "startloop";
+        my $rs_garbate = Search::Kinosearch::KSearch::ResultSet->new(1,0);
         my $ksearch = Search::Kinosearch::KSearch->new(
             -kindex            => $kindex,
             -stoplist          => {},
@@ -230,12 +235,14 @@ sub test_ksearch_response {
         "any_or_all => $any_or_all, bool => $allow_bool, phrases => "
         . "$allow_phrases, query => $query");
         
-        #if (!$success) {
-        if (0) {
+        if (!$success) {
+        #if (0) {
             $ksearch->{kindexes} = undef;
+            $ksearch->{result_set}->_dump(0);
             print Dumper $ksearch;
               exit;
         }
+    #    warn "stoploop";
     }
 }
     

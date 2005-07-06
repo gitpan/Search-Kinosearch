@@ -15,15 +15,9 @@ use File::Temp qw( tempdir );
 use Fcntl qw(:DEFAULT :flock);
 use Storable qw( nfreeze thaw nstore );
 
-my $tempdir_template = "kinotemp_XXXX";
+use constant POSDATA_BUFFER_SIZE => 2 ** 16; # 64 kb
 
-### Line separator, used by Sort::External for delimiting arbitrary 
-### binary data.
-my @randstringchars = (('A' .. 'Z'),('a' .. 'z'),(0 .. 9));
-my $line_separator;
-$line_separator .= $randstringchars[rand @randstringchars] for (1 .. 16);
-$line_separator = " __$line_separator\n";
-my $line_sep_reg = qr/$line_separator$/;
+my $tempdir_template = "kinotemp_XXXX";
 
 ### Build the default path for the kindex output directory.
 my $current_directory = File::Spec->curdir();
@@ -53,14 +47,11 @@ my %init_kindexer_defaults = (
     -encoding               => 'UTF-8',
     -phrase_matching        => 1,
     -enable_datetime        => 0,
-    -enable_sortstring      => 0,
     -stoplist               => undef,   # defined later
     -max_kinodata_fs        => 2 ** 28, # 256 Mb
     -optimization           => 2,
     -verbosity              => 0,
     version                 => $kinosearch_version,
-    default_sortstring      => '',
-    sortstring_bytes        => 0,
     datetime_enabled        => 0,
     datetime_string         => '',
     );
@@ -84,6 +75,7 @@ sub init_kindexer {
     ### Make the Kindexer object a Search::Kinosearch::Kindex.
     $self->init_kindex;
     my $subkindexes = $self->{subkindexes};
+    my $subk_docs = $self->{subk_docs};
 
     ### Establish a write lock on the entire kindex.  This isn't a traditional
     ### write lock, though.  All kindex modifications happen in a temp
@@ -116,10 +108,6 @@ sub init_kindexer {
         CLEANUP => 1,
         );
     
-    ### Survey the number of documents in each subkindex.
-    my @subk_docs;
-    push @subk_docs, (scalar keys %{ $_->{kinodocs} }) for @$subkindexes;
-
     ### Create the outkindex.
     ### All writes are performed on the outkindex, which is stored in 
     ### the temp directory until write_kindex() is called.
@@ -139,7 +127,7 @@ sub init_kindexer {
                 # Just add a second subkindex... 
             }
             elsif ((@$subkindexes > 2) 
-                    or ($subk_docs[1] > $subk_docs[0]/10)) 
+                    or ($subk_docs->[1] > $subk_docs->[0]/10)) 
             {
                 ### Either... the secondary subkindex has gotten too big, 
                 ### time to merge... or... there aren't 2 subkindexes.
@@ -157,15 +145,15 @@ sub init_kindexer {
         elsif ($optimization == 3) {
             ### start by assuming we'll need to consolidate all subkindexes,
             ### then pare down the list.
-            @to_consolidate = (0 .. $#subk_docs);
-            for my $knum (0 .. $#subk_docs) {
+            @to_consolidate = (0 .. $#$subk_docs);
+            for my $knum (0 .. $#$subk_docs) {
                 if (@to_consolidate < 10) {
                     @to_consolidate = ();
                     last;
                 }
-                my $big = $subk_docs[$knum];
+                my $big = $subk_docs->[$knum];
                 my $small;
-                $small += $subk_docs[$_] for ($knum .. ($knum + 9));
+                $small += $subk_docs->[$_] for ($knum .. ($knum + 9));
                 last if $small > $big;
                 shift @to_consolidate;
             }
@@ -219,19 +207,20 @@ sub init_kindexer {
     }
     
     my $kinodel = $self->{kinodel};
-    
-    ### Find the lowest doc_num in the outkindex.
-    my $highest = scalar keys %{ $outkindex->{kinodocs} };
-    if ($highest) {
-        while (1) {
-            $highest++;
-            next if exists $outkindex->{kinodocs}{$highest};
-            next if (exists $kinodel->{$highest} 
-                     and exists $kinodel->{$highest}{$outknum});
-            last;
+
+    ### Set doc_num to the next valid index in the kinodocs array.
+    if (exists $outkindex->{kinodocs}[0]) {
+        my $highest = $#{ $outkindex->{kinodocs} };
+        while ($highest > -1 ) {
+            last if defined $outkindex->{kinodocs}[$highest];
+            $highest--;
         }
+        $highest = defined $highest ? $highest + 1 : 0;
+        $self->{doc_num} = $highest;
     }
-    $self->{doc_num} = $highest;
+    else {
+        $self->{doc_num} = 0;
+    }
 
     if (!$self->{field_defs}) { 
         ### If there aren't any field definitions yet, that means kinodata 
@@ -244,13 +233,8 @@ sub init_kindexer {
             );
         $self->define_field(
             -name            => 'doc_mdfive',
-            -store           => 1,
+            -store           => 0,
             -score           => 0,
-            );
-        $self->define_field(
-            -name            => 'doc_num',
-            -score           => 0,
-            -kdata_bytes     => 4,
             );
     }
     
@@ -259,23 +243,15 @@ sub init_kindexer {
         $self->{kdata_bytes}{datetime} = 8;
     }
                                        
-    ### Enable the sortstring (used in range queries).  EXPERIMENTAL!
-    if ($self->{-enable_sortstring} or $self->{sortstring_bytes}) {
-        my $bytes = $self->{-enable_sortstring} || $self->{sortstring_bytes};
-        $self->{sortstring_bytes} = $bytes;
-        $self->{kdata_bytes}{sortstring} = $bytes;
-        $self->{default_sortstring} = "\0" x $bytes;
-    }
-                                       
-    ### Unless we're in update mode (in which case num_docs was set by
-    ### init_kindex), set num_docs to 0.
-    $self->{num_docs} ||= 0;
+    ### Unless we're in update mode (in which case subk_docs was set by
+    ### init_kindex), set subk_docs to 0 for the outkindex.
+    $self->{subk_docs} ||= [];
+    $self->{subk_docs}[$outknum] ||= 0;
     
     ### The Sort::External object autosorts the kinodata cache.
     $self->{kinodata_cache} = Sort::External->new(
         -working_dir => $self->{temp_dir},
-        #-cache_size  => ??? TODO
-        -line_separator => $line_separator,
+        -line_separator => 'random',
         );
 }
 
@@ -298,7 +274,6 @@ sub new_doc {
     if ($self->{datetime_enabled}) {
         %args_to_doc = ( 
             fields => \%fields,
-            sortstring => $self->{default_sortstring},
             datetime_ymdhms => [ 0,0,0,0,0,0 ],
             datetime_string => "\0\0\0\0\0\0\0\0",
             );
@@ -306,7 +281,6 @@ sub new_doc {
     else {
         %args_to_doc = ( 
             fields => \%fields,
-            sortstring => $self->{default_sortstring},
             datetime_ymdhms => undef,
             datetime_string => '', 
             );
@@ -324,25 +298,25 @@ sub add_doc {
     my $self = shift;
     my $doc = shift or croak("Expecting a Search::Kinosearch::Doc object");
     
+    use bytes;
+
     my $docfields = $doc->{fields};
     
     $self->{initialized} ||= 1;
     
     my $doc_num = $self->{doc_num};
-    $doc->set_field( doc_num => $doc_num );
+    my $packed_doc_num = pack('N', $doc_num);
     
     ### Prepare the doc_mdfive, a hash value which will be used to identify 
     ### the doc in various places.
     my $doc_id = $doc->get_field('doc_id');
     my $doc_mdfive = md5_hex($doc_id);
-    $doc->set_field( doc_mdfive => $doc_mdfive );
     
     ### If a document with the same unique id already exists in the kindex,
     ### overwrite it.
     $self->delete_doc( -doc_mdfive => $doc_mdfive );
     
     my (%to_score, %unstemmed, %positions);
-    my $tokenize = $self->{tokenize_method};
     my $stem = $self->{stem_method};
     my $field_defs = $self->{field_defs};
     
@@ -353,7 +327,7 @@ sub add_doc {
 
         if ($field_defs->{$field}{-tokenize}) {
             ($to_score{$field}, $positions{$field}) 
-                = $self->$tokenize($to_score{$field}[0]);
+                = $self->{tokenize_method}->($self, $to_score{$field}[0]);
         }
         else {
             $positions{$field} = [];
@@ -361,66 +335,59 @@ sub add_doc {
 
         if ($field_defs->{$field}{-stem}) {
             $unstemmed{$field} = $to_score{$field};
-            $to_score{$field} = $self->$stem($to_score{$field});
+            $to_score{$field} = 
+                $self->{stem_method}->($self, $to_score{$field});
         }
-    }
-
-    if ($self->{sortstring_bytes}) {
-        my $sortstring_bytes = $self->{sortstring_bytes};
-        my $sortstring = $doc->{sortstring};
-        ### sortstring is fixed length, so null-pad or truncate it as necessary.
-        use bytes;
-        my $len = length($sortstring);
-        if ($len == $sortstring_bytes) {
-            ;
-        }
-        elsif ($len < $sortstring_bytes) {
-            $sortstring .= "\0" x ($sortstring_bytes - $len);
-        }
-        elsif ($len > $sortstring_bytes) {
-            $sortstring = substr($sortstring, 0, $sortstring_bytes);
-        }
-        $len = length($sortstring);
-        $doc->{sortstring} = $sortstring;
     }
     
-    ### Produce proximity data
     my $storable_fields = $self->{fields_store};
     my @field_lengths = map { length $docfields->{$_} } @$storable_fields;
     my $field_lengths_string = '';
     $field_lengths_string .= pack('N', $_) for @field_lengths;
+
+    my @posdeltas;
+    my $num_tokens = 0;
+    my %token_positions;
+    my $last_pos = 0;
     my $posit_offset = 0;
-    my %token_infos;
+    my $posnumber = 0;
     for my $storable_field (@$storable_fields) {
         my $posits = $positions{$storable_field};
         no warnings 'uninitialized';
+        $num_tokens += @{ $to_score{$storable_field} };
         for my $token (@{ $to_score{$storable_field} }) {
-            $token_infos{ pack('N',(crc32($token) )) } 
-                .= pack( 'N', ((shift @$posits) + $posit_offset) );
+            my $pos = (shift @$posits) + $posit_offset;
+            $token_positions{$token} .= pack( 'N', $posnumber );
+            $posnumber++;
+            push @posdeltas, $pos - $last_pos;
+            $last_pos = $pos;
         }
         $posit_offset += shift @field_lengths;
     }
-    
-    my $num_tokens = pack('N', scalar keys %token_infos);
-    my @token_info_lengths;
-    {
-        use bytes;
-        @token_info_lengths = map { length($_) } values %token_infos;
-    }
 
-    $self->{outkindex}{kinodocs}{$doc_num} = 
-        $field_lengths_string . 
+    my @bigger_than_250;
+    for (@posdeltas) {
+        next unless $_ > 250;
+        push @bigger_than_250, $_;
+        $_ = 255;
+    }
+    my $posdelta_string 
+        = pack('N N ', scalar @posdeltas, scalar @bigger_than_250);
+    $posdelta_string .= pack('C*', @posdeltas);
+    $posdelta_string .= pack('n*', @bigger_than_250);
+
+    $self->{outkindex}{kinodocs}[$doc_num] = 
+        $packed_doc_num .
+        $doc_mdfive .  $field_lengths_string . 
         (join '', @{ $docfields }{ @$storable_fields }) .
-        $num_tokens . 
-        (join '', keys %token_infos) .
-        pack ('N*', @token_info_lengths) . 
-        (join '', values %token_infos );
+        $posdelta_string;
         
     $self->{outkindex}{kinoids}{$doc_mdfive} = $doc_num;
-    $self->_score_terms($doc,$doc_num,\%to_score,\%unstemmed );
+    $self->_score_terms( $doc, $doc_num, \%to_score, 
+                         \%unstemmed,\%token_positions );
 
     $self->{doc_num} += 1;
-    $self->{num_docs} += 1;
+    $self->{subk_docs}[$self->{outknum}] += 1;
 }
 
 ##############################################################################
@@ -448,17 +415,17 @@ sub delete_doc {
     
         ### Retrieve stored info.
         ### TODO decode.
-        $deleted = delete $subkindex->{kinodocs}{$doc_num};
+        $deleted = $subkindex->{kinodocs}[$doc_num];
         ### Add the document to a list of deleted documents.  
         ### It's been purged from kinodocs, but references to it are still
         ### peppered throughout the kinodata.  Those will go away when a
         ### kinodata rewrite is triggered - either by _consolidate_subkindex,
         ### or if the doc belongs to the outkindex, by generate().
         $self->{kinodel}{$doc_num}{$knum} = undef;
+        --$self->{subk_docs}[$knum] if defined $deleted;
     }
 
     ### Keep track of the number of documents in the total collection.
-    --$self->{num_docs} if defined $deleted;
 
     ### Return the stored fields for the document.
     return $deleted;
@@ -480,9 +447,8 @@ sub doc_is_indexed {
 ### Calculate the document's score for each term
 ##############################################################################
 sub _score_terms {
-    my ( $self, $doc, $doc_num, $to_score, $unstemmed ) = @_;
+    my ( $self, $doc, $doc_num, $to_score, $unstemmed, $token_positions ) = @_;
     
-    my $sortstring = $doc->{sortstring};
     my $datetime_string = $doc->{datetime_string};
     
     my $stoplist = $self->{stoplist};
@@ -492,6 +458,8 @@ sub _score_terms {
     
     my %aggscores;
     my %fieldscores;
+
+    my $packed_doc_num = pack('N', $doc_num);
 
     ### Iterate through *scorable* fields.
     foreach my $fieldname (@$scorable_fields) {
@@ -506,7 +474,7 @@ sub _score_terms {
             if ($field_defs->{$fieldname}{-stem}) {
                 my $stemless = $unstemmed->{$fieldname};
                 for my $term (@$scorable_terms) {
-                    next if exists $stoplist->{ shift @$stemless };
+#                    next if exists $stoplist->{ shift @$stemless };
                     next if $term eq '';
                     $rawscores{$term} += 1;
                 }
@@ -519,12 +487,12 @@ sub _score_terms {
             }
         }
         ### Score token pairs if phrase matching is turned on.
-        if ($self->{-phrase_matching}) {
-            while ($#$scorable_terms) {
-                my $pair = shift @$scorable_terms;
-                $rawscores{"$pair $scorable_terms->[0]"} += 1;
-            }
-        }
+#        if ($self->{-phrase_matching}) {
+#            while ($#$scorable_terms) {
+#                my $pair = shift @$scorable_terms;
+#                $rawscores{"$pair $scorable_terms->[0]"} += 1;
+#            }
+#        }
         
         ### tf = term frequency in field
         ### norm = square root of total tokens in field
@@ -540,9 +508,27 @@ sub _score_terms {
             ### Add the weighted score for the term in this field
             ### to the document's aggregate score for this term.
             $aggscores{$term} += $temp_score * $fieldweight;
-            ### Prepare the field/term score for storage as a 16-bit 
-            ### int. 
-            $fieldscores{$fieldname}{$term} = $temp_score * 32_000;
+            ### Prepare the field/term score for storage in a crude floating
+            ### point format: 8-bit exponent, 8-bit mantissa, both
+            ### non-negative.
+
+            $temp_score = int($temp_score * 1024);
+            my $exponent = 4;
+            while ($temp_score < 128) {
+                $temp_score <<= 1;
+                --$exponent;
+                if ($exponent == 0) {
+                    $temp_score = 128;
+                    last;
+                }
+            }
+            while ($temp_score > 255) {
+                $temp_score >>= 1;
+                ++$exponent;
+            }
+
+            $fieldscores{$fieldname}{$term} 
+                = pack('C C', $exponent, $temp_score);
         }
     }
     if (!defined $self->{kdt_pre_template}) {
@@ -559,21 +545,40 @@ sub _score_terms {
     ### by a null byte.  The line separator terminates each entry.
     my @entries;
     foreach my $term (sort keys %aggscores) {
-        my @fscores;
+        my $fscores;
         for (@$scorable_fields) {
-            my $val = exists $fieldscores{$_}{$term} ? 
-                      $fieldscores{$_}{$term} : 0;
-            push @fscores, $val;
+            if (exists $fieldscores{$_}{$term}) {
+                $fscores .= $fieldscores{$_}{$term};
+            }
+            else {
+                $fscores .= "\0\0";
+            }
         }
-        
-        ### Normalize the aggscore so that it will fit comfortably within a 
-        ### 16-bit int.
+        my $posdata_str = exists $token_positions->{$term} ?
+                          $token_positions->{$term} : '';
+                          
         my $normalized_aggscore 
-            = int(($aggscores{$term} / $norm_divisor) * 32_000);
+            = int(($aggscores{$term} * 1024) / $norm_divisor);
+        my $exponent = 4;
+        while ($normalized_aggscore < 128) {
+            $normalized_aggscore <<= 1;
+            --$exponent;
+            if ($exponent == 0) {
+                $normalized_aggscore = 128;
+                last;
+            }
+        }
+        while ($normalized_aggscore > 255) {
+            $normalized_aggscore >>= 1;
+            ++$exponent;
+        }
+
+        my $packed_aggscore 
+            = pack('C C', $exponent, $normalized_aggscore);
             
-        my $kinodata_entry = $term . "\0" . $sortstring . $datetime_string .
-            pack($kdt_pre_template, $doc_num, $normalized_aggscore, @fscores)
-            . $line_separator;
+        my $kinodata_entry = $term . "\0\0" .
+           $packed_doc_num . $packed_aggscore . 
+           $fscores . $datetime_string . $posdata_str;
 
         ### For now, we store the precursors in memory.  
         push @entries, $kinodata_entry;
@@ -609,6 +614,7 @@ sub _consolidate_subkindex {
         $conkinodel{$dnum} = undef;
     }
     
+    my $outknum = $self->{outknum};
     my $outkindex = $self->{outkindex};
     my $outkinoids = $outkindex->{kinoids};
     my $outkinodocs = $outkindex->{kinodocs};
@@ -622,17 +628,25 @@ sub _consolidate_subkindex {
     my $out_doc_num = $self->{doc_num};
     unless ($kinodata_only) {
         ### Transfer kinodocs, kinoprocs, kinoids
-        while (my ($mdfive, $old_doc_num) = each %$conkinoids) {
-            next if exists $conkinodel{$old_doc_num};
-            $self->{num_docs}++;
-            $out_doc_num++;
-            $outkinoids->{$mdfive} = $out_doc_num;
-            $remapped_doc_nums{$old_doc_num} = pack('N', $out_doc_num);
-            $outkinodocs->{$out_doc_num} = $conkinodocs->{$old_doc_num};
+        my $old_doc_num = 0;
+        while (exists $conkinodocs->[$old_doc_num]) {
+            if (!exists $conkinodel{$old_doc_num}) {
+                my $stored_data = $conkinodocs->[$old_doc_num]; 
+                next unless defined $stored_data;
+                my $packed_new_doc_num = pack('N', $out_doc_num);
+                ### Swap in the replacement doc_num.
+                substr($stored_data, 0, 4, $packed_new_doc_num);
+                my $mdfive = substr($stored_data, 4, 32);
+                $self->{subk_docs}[$outknum]++;
+                $outkinoids->{$mdfive} = $out_doc_num;
+                $remapped_doc_nums{$old_doc_num} = $packed_new_doc_num;
+                $outkinodocs->[$out_doc_num] = $stored_data;
+                $out_doc_num++;
+            }
+            $old_doc_num++;
         }
         $self->{doc_num} = $out_doc_num;
     }
-    
     
     ### Add old kinodata to kinodata_cache.
     my $kdata_fields = $self->{fields_kdata};
@@ -644,26 +658,26 @@ sub _consolidate_subkindex {
     my $sorted_terms = Sort::External->new;
     $sorted_terms->feed( "$_\n" ) for keys %$conkinoterms; ### loaded into mem? 
     $sorted_terms->finish;
-    while (my $term = $sorted_terms->fetch) {
+    my $term;
+    while (defined ($term = $sorted_terms->fetch)) {
         chomp $term;
         my %kinoterms_entry;
         @kinoterms_entry{'doc_freq','offset','filenum'} =
             unpack('N N N', $conkinoterms->{$term});
         my $doc_freq = $kinoterms_entry{doc_freq};
         
-        my @buffer = ("$term\0") x $doc_freq;
+        my @buffer = ("$term\0\0") x $doc_freq;
         
         my @invalid;
         for my $fieldname (@$kdata_fields) {
-            my $packed_data;
             next unless $kdata_bytes->{$fieldname};
-            $packed_data = $self->_read_kinodata(
+            my $packed_data_ref = $self->_read_kinodata(
                 $conkindex, $fieldname, 
                 @kinoterms_entry{'filenum','offset','doc_freq'});
             my @unpacked;
             if ($fieldname eq 'doc_num') {
                 my @actual_numbers
-                    = unpack(('N ' x $doc_freq), $packed_data);
+                    = unpack(('N ' x $doc_freq), $$packed_data_ref);
                 my $count = 0;
                 if ($kinodata_only) {
                     for (@actual_numbers) {
@@ -693,12 +707,11 @@ sub _consolidate_subkindex {
             else {
                 @unpacked = unpack(
                     ($buffer_templates{$fieldname} x $doc_freq), 
-                    $packed_data
+                    $$packed_data_ref
                     );
             }
             $_ .= shift @unpacked for @buffer;
         }
-        $_ .= $line_separator for @buffer;
         $buffer[$_] = '' for @invalid;
         $self->{kinodata_cache}->feed(@buffer);
     }
@@ -728,19 +741,18 @@ sub generate {
 
     my $kdata_filenum = 0;
     my @kdata_filehandles;
-    my @kdata_fileparts = ('doc_num','aggscore', @$scorable_fields);
+    my @kdata_fileparts = ('doc_num','aggscore',@$scorable_fields);
     my $doc_num_i = 0;
-    my $test_kdata_length = 6 + 2 * @$scorable_fields;
+    my $kdata_length = 6 + 2 * @$scorable_fields;
     if ($self->{datetime_enabled}) {
-        unshift @kdata_fileparts, 'datetime';
-        $doc_num_i++;
-        $test_kdata_length += 8;
+        push @kdata_fileparts, 'datetime';
+        $kdata_length += 8;
     }
-    if ($self->{sortstring_bytes}) {
-        unshift @kdata_fileparts, 'sortstring';
-        $doc_num_i++;
-        $test_kdata_length += $self->{sortstring_bytes};
+    my $kdt_splitter_template = '';
+    for (@kdata_fileparts) {
+        $kdt_splitter_template .= "a$self->{kdata_bytes}{$_} ";
     }
+    push @kdata_fileparts, 'posaddr';
     
     my $max_bytes_per_entry = 0;
     for (values %{ $self->{kdata_bytes} }) {
@@ -751,10 +763,15 @@ sub generate {
         = int($self->{-max_kinodata_fs} / $max_bytes_per_entry);
     my $entries_per_kdata_file = $self->{entries_per_kdata_file};
 
-    my $kdt_splitter_template = '';
-    for (@kdata_fileparts) {
-        $kdt_splitter_template .= "a$self->{kdata_bytes}{$_} ";
-    }
+
+    my $posdata_fh;
+    my $posdata_filenum      = 0;
+    my $posdata_fs           = 0;
+    my $term_posdata_len     = 0;
+    my $term_posdata_start   = 0;
+    my $term_posdata_filenum = 0;
+    my $max_posdata_fs = 
+        $self->{-max_kinodata_fs} - ($self->{-max_kinodata_fs} % 4);
         
     my $kinodata_cache = $self->{kinodata_cache};
     $kinodata_cache->finish;
@@ -766,6 +783,8 @@ sub generate {
     my $started = 0;
     my $heldover_line;
 
+    my $posdata_buffer = '';
+    
     while (my $line = $kinodata_cache->fetch) {
         ++$loopcount;
         OPEN_KDATA: { # single iteration loop structure. 
@@ -792,13 +811,18 @@ sub generate {
             }
             $record_offset = 0;
         }
-        $line =~ s/^([^\0]*)\0// 
+        
+        $line =~ s/^([^\0]*)\0\0// 
             or confess "Internal error. kinopre line content: $_";
         my $term = $1;
-        $line =~ s/$line_sep_reg//
-            or confess "Internal error. kinopre line content: $_";
+        my $kdata = substr($line, 0, $kdata_length, '');
+        
         my @kdata_values
-            = unpack($kdt_splitter_template, $line);
+            = unpack($kdt_splitter_template, $kdata);
+        {
+            use bytes;
+        push @kdata_values, pack('n', ((length $line) / 4)); # posaddr
+        }
         
         my $doc_num = unpack('N', $kdata_values[$doc_num_i]);
         ### Don't use this precursor line if it belongs to a deleted doc.
@@ -816,32 +840,73 @@ sub generate {
         if ($heldover_term ne $term) {
             if ($started) {
                 $outkindex->{kinoterms}{$heldover_term} = 
-                    pack('N N N', 
+                    pack('N N N N N N', 
                         $record_length_in_lines, # doc_freq
                         $record_start,           # offset
                         $record_filenum,         # filenum
+                        $term_posdata_len,
+                        $term_posdata_start,
+                        $term_posdata_filenum,
                         );
             }
             ### Prepare for the next term.
             $record_length_in_lines = 0;
-            $record_start = $record_offset;
-            $record_filenum = $kdata_filenum;
+            $record_start           = $record_offset;
+            $record_filenum         = $kdata_filenum;
+            $term_posdata_len       = 0;
+            $term_posdata_start     = $posdata_fs / 4;
+            $term_posdata_filenum   = $posdata_filenum;
         }
+
+        my $posdata_len = length $line;
+        my $posdata_fs_addition = $posdata_len;
+        
+        if ($posdata_fs_addition + $posdata_fs >= $max_posdata_fs) {
+            my $amount = $max_posdata_fs - $posdata_fs;
+            $posdata_fs_addition -= $amount;
+            print $posdata_fh substr($line, 0, $amount, '');
+            close $posdata_fh or confess("Couldn't close file: $!");
+            undef $posdata_fh;
+            $posdata_filenum++;
+        }
+        if (!defined $posdata_fh) {
+            my $posdata_filepath = File::Spec->catfile(
+                $outkindex->{fpath}, "posdata$posdata_filenum.kdt");
+            sysopen($posdata_fh, $posdata_filepath, 
+                O_CREAT | O_WRONLY | O_EXCL)
+                or croak("Couldn't open file '$posdata_filepath': $!");
+            $posdata_fs = 0;
+        }
+        $posdata_fs += $posdata_fs_addition;
+        print $posdata_fh $line;
 
         $heldover_term = $term;
         $record_offset++;
         $record_length_in_lines++;
+        $term_posdata_len += ($posdata_len / 4);
 
         $started ||= 1;
     }
-    close $_ for @kdata_filehandles;
+    for (@kdata_filehandles, $posdata_fh) {
+        next unless defined;
+        close $_ or confess $!;
+    }
     ### Record the last remaining entry
     $outkindex->{kinoterms}{$heldover_term} = 
-        pack('N N N', 
+        pack('N N N N N N', 
             $record_length_in_lines, # doc_freq
             $record_start,           # offset
             $record_filenum,         # filenum
+            $term_posdata_len,
+            $term_posdata_start,
+            $term_posdata_filenum,
             );
+
+    ### Truncate the subk_docs array to reflect the true number of subkindexes.
+    $#{ $self->{subk_docs} } = $self->{outknum};
+    ### Calculate how many docs we have in the whole kindex;
+    $self->{num_docs} = 0;
+    $self->{num_docs} += $_ for @{ $self->{subk_docs} };
 
     ### We're finished modifying the kindex data, so record its stats. 
     $self->_write_kinostats;
@@ -853,7 +918,7 @@ sub generate {
             next unless $_ >= $outknum;
             delete $knumhash->{$_};
         }
-        delete $kinodel->{$doc_num} unless %$knumhash;
+        delete $kinodel->{$doc_num} unless scalar keys %$knumhash;
     }
     
     ### Store deleted docs in a file.
@@ -937,19 +1002,27 @@ sub _purge_subkindex {
     my $mpath = shift;
     my $fpath = shift;
 
-    for (qw( kinodocs kinoids )) {
-        my $path = File::Spec->catfile($mpath, $_);
-        next unless -e $path;
-        unlink $path or  die "Couldn't unlink file '$path': $!";
-    }
+    my @purgeable;
+
+    push @purgeable,  File::Spec->catfile($mpath,'kinoids');
+    push @purgeable,  File::Spec->catfile($fpath,'kinoterms');
+    
     opendir FPATH, $fpath
         or confess("Couldn't read directory '$fpath': $!");
     my @files = grep { /^[a-zA-Z_]+\d+\.kdt$/ } readdir FPATH;
     closedir FPATH;
-    push @files, 'kinoterms';
-    for (@files) {
-        $_ = File::Spec->catfile($fpath, $_);
-        unlink $_ or die "Couldn't unlink file '$_': $!";
+    $_ = File::Spec->catfile($fpath, $_) for @files;
+    push @purgeable, @files;
+    
+    opendir MPATH, $mpath
+        or confess("Couldn't read directory '$mpath': $!");
+    @files = grep { /kinodocs\d+\.(idx|dat)$/ } readdir MPATH;
+    closedir MPATH;
+    $_ = File::Spec->catfile($mpath, $_) for @files;
+    push @purgeable, @files;
+    
+    for (@purgeable) {
+        unlink $_ or  die "Couldn't unlink file '$_': $!";
     }
     rmdir $mpath or croak("Couldn't rmdir '$mpath': $!");
     rmdir $fpath or croak("Couldn't rmdir '$fpath': $!");
@@ -963,14 +1036,14 @@ sub _write_kinostats {
 
     my %stats;
     my @members= qw(  field_defs
-                      num_docs 
+                      subk_docs 
+                      num_docs
                       doc_num
                       language
                       encoding 
                       version 
                       entries_per_kdata_file
                       datetime_enabled
-                      sortstring_bytes
                       );
         @stats{@members} = @{ $self }{@members};
     my $path = File::Spec->catfile($self->{temp_dir}, 'kinostats');
