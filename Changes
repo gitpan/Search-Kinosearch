@@ -1,45 +1,47 @@
-Revision history for Search::Kinosearch.
+Revision history for Perl extension Search::Kinosearch.
 
-0.03
-    - Rewrite rank-sort algo in C.
-    - Completely change how positional data is stored.
-    - Add requirement for Perl 5.8.0
+0.021 2005-07-25
+     - Change documentation wrt -temp_directory
+     - Make Kindexer compatible with Sort::External 0.05
+     - fix fencepost error in number of results returned by KSearch
+     - Restore score to hit_hashref
 
-0.02
-    - Fixed missing true value at the end of QueryParser.pm
-    - Updated dependency for Sort::External to 0.02
+0.02  2005-06-07
+     - Fixed missing true value at the end of QueryParser.pm
+     - Updated dependency for Sort::External to 0.02
 
-0.01
-    - Many changes to the interface and kindex file format.
-    - Many search-time performance improvements.
-    - Many new modules.
-    - Complete rewrite of KSearch query parser.
-    - DB_File is now the only backend.
-    - Dependency on Config::General has been eliminated.  Kinostats now uses 
-      Storable.
-    - Some code abstracted out of Kindexer into new module Sort::External.
+0.01  2005-06-07
+     - Many changes to the interface and kindex file format.
+     - Many search-time performance improvements.
+     - Many new modules.
+     - Complete rewrite of KSearch query parser.
+     - DB_File is now the only backend.
+     - Dependency on Config::General has been eliminated.  Kinostats now 
+       uses Storable.
+     - Some code abstracted out of Kindexer into new module Sort::External.
 
-0.01_02  Sat Jan 29 10:56:14 2005
-    - Added Makefile.PL, moved modules into lib/ and prepared an actual 
+0.01_02  2005-01-29
+     - Added Makefile.PL, moved modules into lib/ and prepared an actual 
       distribution.
-    - Made kinodata filesize settable.
-    - Changed how tokenize routine works - now it also returns a positions
-      hashref -- and _this_ one is accurate, so the right words are now
-      highlighted by KSearch.
-    - tokenize() in Lingua::Xx subclasses now wraps tokenize() from Lingua.pm
-    - Rolled Hr.pm and Es.pm into the primary distribution
-    - Added dependency for Lingua::Spelling::Alternative
-    - Fixed bug where tempfiles were being unlinked but not closed
-    - Changed an unpack template in KSearch for 5.6.1 compatibility.
-    - Added doc_is_indexed() method to Kindexer.pm
-    - process() now returns a status hash in KSearch.pm
-    - Removed -weight param from define_field() in Kindexer.pm
-    - Changed -fields param to accept a hashref in KSearch.pm
-    - Added print error check in Kindexer's sorting routines.
-    - Fixed "1 in 10" bug where _write_kinodata_cache_to_tempfile() would
-      create an empty tempfile when called by finish()
-    - Removed public documentation for set_tokenizer and set_stemmer
-    - Added Spanish stoplist
+     - Made kinodata filesize settable.
+     - Changed how tokenize routine works - now it also returns a positions
+       hashref -- and _this_ one is accurate, so the right words are now
+       highlighted by KSearch.
+     - tokenize() in Lingua::Xx subclasses now wraps tokenize() 
+       from Lingua.pm
+     - Rolled Hr.pm and Es.pm into the primary distribution
+     - Added dependency for Lingua::Spelling::Alternative
+     - Fixed bug where tempfiles were being unlinked but not closed
+     - Changed an unpack template in KSearch for 5.6.1 compatibility.
+     - Added doc_is_indexed() method to Kindexer.pm
+     - process() now returns a status hash in KSearch.pm
+     - Removed -weight param from define_field() in Kindexer.pm
+     - Changed -fields param to accept a hashref in KSearch.pm
+     - Added print error check in Kindexer's sorting routines.
+     - Fixed "1 in 10" bug where _write_kinodata_cache_to_tempfile() would
+       create an empty tempfile when called by finish()
+     - Removed public documentation for set_tokenizer and set_stemmer
+     - Added Spanish stoplist
 
 0.00_01  Wed Jan 26 11:56:14 2005
-    - initial prerelease release
+     - initial prerelease release

@@ -1,4 +1,4 @@
-use 5.008;
+use 5.006001;
 use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
@@ -10,12 +10,9 @@ WriteMakefile(
         'Compress::Zlib'                => 1.33,
         'Lingua::Stem::Snowball'        => 0.7,
         'Test::Exception'               => 0.15,
-        'Sort::External'                => 0.04,
+        'Sort::External'                => 0.05,
         'String::CRC32'                 => 1.3,
         'DB_File'                       => 0,
-        'Inline::C'                     => 0,
-        'File::Temp'                    => 0.14,
-        'Class::WhiteHole'              => 0,
         },
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
       (ABSTRACT_FROM  => 'lib/Search/Kinosearch.pm', # retrieve abstract from module

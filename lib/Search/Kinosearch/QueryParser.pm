@@ -3,7 +3,6 @@ use strict;
 use warnings;
 
 use base qw( Search::Kinosearch );
-use Search::Kinosearch::KSearch::ResultSet;
 use attributes 'reftype';
 
 use Carp;
@@ -170,13 +169,11 @@ sub _replace_phrases {
         my $inc = ++$self->{phrase_inc};
         my $label = "__phrase$randstring" . sprintf('%04d', $inc);
         $sprout->{qstring} =~ s/$phrasereg/$label/;
-        my $result_set = Search::Kinosearch::KSearch::ResultSet->new(0,0);
-        $self->{phrase_storage}{$label} = 
+        $self->{phrase_storage}{$label } = 
             {
                 qstring => $1, # capture defined in $phrasereg
                 prodtype => 'phrase',
                 set_size => 0,
-                result_set => $result_set,
             };
     }
 }
@@ -199,13 +196,11 @@ sub _replace_parens {
         my $inc = ++$self->{paren_inc};
         my $label = "__paren$randstring" . sprintf('%04d', $inc);
         $sprout->{qstring} =~ s/$parenreg/$label/;
-        my $result_set = Search::Kinosearch::KSearch::ResultSet->new(0,0);
         $self->{paren_storage}{$label} =  
             {
                 qstring => $1, # capture defined in $parenreg
                 prodtype => 'none',
                 set_size => 0,
-                result_set => $result_set,
             };
     }
     
@@ -251,8 +246,6 @@ sub _define_and_tokenize {
     }
     else {
         $sprout->{prodtype} = 'multi';
-        $sprout->{result_set} = 
-            Search::Kinosearch::KSearch::ResultSet->new(0,0);
         $sprout->{set_size} = 0;
         my $qstring = $sprout->{qstring};
         
@@ -266,8 +259,6 @@ sub _define_and_tokenize {
             $prodtype = $prodtype ne 'label' ?
                 $prodtype : ($candidate =~ /$unopreg?__([a-z]+)/) ?
                 $1 : 'error';
-            my $result_set = 
-                Search::Kinosearch::KSearch::ResultSet->new(0,0);
                 
             $sprout->{productions} ||= [];
             push @{ $sprout->{productions} }, 
@@ -275,7 +266,6 @@ sub _define_and_tokenize {
                     qstring => $candidate,
                     prodtype => $prodtype,
                     set_size => 0,
-                    result_set => $result_set,
                 };
         }
     }
@@ -315,14 +305,11 @@ sub _isolate_boolgroups {
                 my $inc = ++$self->{paren_inc};
                 my $boolgrouplabel = "__boolgroup$randstring" 
                     . sprintf('%04d', $inc);
-                my $result_set = 
-                    Search::Kinosearch::KSearch::ResultSet->new(0,0);
                 my $boolgroup = {
                     productions => [],
                     prodtype    => 'boolgroup',
                     qstring     => $boolgrouplabel,
                     set_size    => 0,
-                    result_set  => $result_set,
                 };
                 @{ $boolgroup->{productions} } 
                     = splice(@{ $sprout->{productions} }, $first_element,
@@ -354,8 +341,9 @@ sub _tokenize_for_real {
     return unless $sprout->{prodtype} eq 'tokenizable';
     
     my $tokenreg = $self->{tokenreg};
+    my $tokenize_method = $self->{tokenize_method};
     (my $tokenizable) = $sprout->{qstring} =~ /($tokenreg)/;
-    my ($tokenized, undef) = $self->{tokenize_method}->($self, $tokenizable);
+    my ($tokenized, undef) = $self->$tokenize_method( $tokenizable );
     if ($tokenized->[0] eq $sprout->{qstring}) {
         $sprout->{prodtype} = 'terminal'
     }
@@ -370,8 +358,7 @@ sub _tokenize_for_real {
             ];
     }
     elsif ($#$tokenized > 0) {
-        ($tokenized, undef) = 
-            $self->{tokenize_method}($self, $self->{qstring});
+        ($tokenized, undef) = $self->$tokenize_method( $self->{qstring} );
         $sprout->{prodtype} = 'multi';
         $sprout->{productions} ||= [];
         foreach my $freshtoken (@$tokenized) {
@@ -509,7 +496,8 @@ sub _apply_stemming {
     }
     
     return unless $sprout->{prodtype} eq 'terminal';
-    my $stemmed = $self->{stem_method}( $self, [ $sprout->{qstring} ] );
+    my $stem_method = $self->{stem_method};
+    my $stemmed = $self->$stem_method( [ $sprout->{qstring} ] );
     $sprout->{qstring} = $stemmed->[0]
         if $stemmed->[0];
 }
@@ -530,17 +518,22 @@ sub _expand_phrases {
     
     return unless $sprout->{prodtype} eq 'phrase';
     
+    my $tokenize_method = $self->{tokenize_method};
+    my $stem_method = $self->{stem_method};
+
     my $labelreg = $self->{labelreg};
 
     my ($label) = $sprout->{qstring} =~ /($labelreg)/ 
         or confess "Internal error";  
     my $original_text = $self->{phrase_storage}{$label}{qstring};
-    my ($tokens, undef) = $self->{tokenize_method}->($self, $original_text);
-    $tokens = $self->{stem_method}->( $self, $tokens ) 
+    my ($tokens, undef) = $self->$tokenize_method( $original_text );
+    $tokens = $self->$stem_method( $tokens ) 
         if $trunk->{-stem};
     my @terminals;
     if (@$tokens > 1) {
-        @terminals = @$tokens;
+        for (1 .. $#$tokens) {
+            push @terminals, ($tokens->[$_-1] . ' ' . $tokens->[$_]);
+        }
     }
     elsif (@$tokens == 1) {
         if (exists $self->{stoplist}{"$original_text"}) {
@@ -559,13 +552,11 @@ sub _expand_phrases {
 
     my @productions;
     foreach my $terminal (@terminals) {
-        my $result_set = Search::Kinosearch::KSearch::ResultSet->new(0,0);
         push @productions, {
                 qstring => $terminal,
                 prodtype => 'terminal',
                 required => 1,
                 negated  => 0,
-                result_set => $result_set,
             };
     }
     $sprout->{productions} = \@productions;
