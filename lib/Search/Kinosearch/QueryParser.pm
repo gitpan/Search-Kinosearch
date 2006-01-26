@@ -570,6 +570,11 @@ __END__
 
 Search::Kinosearch::QueryParser - parse search queries
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
 No public interface.

@@ -224,7 +224,7 @@ sub process {
         }
     }
     $self->{ranked_results} = \@ranked_results;
-    $self->{status_hash}{num_docs} = $self->{num_docs};
+    $self->{status_hash}{num_docs} = $self->{kindex}{num_docs};
     return $self->{status_hash}; 
 }
 
@@ -892,14 +892,10 @@ __END__
 
 Search::Kinosearch::KSearch - Perform searches
 
-=head1 WARNING
+=head1 DEPRECATED
 
-Search::Kinosearch is ALPHA test software.  Aspects of the interface are
-almost certain to change, given the suite's complexity.  Users should not
-count on compatibility of files created by Kinosearch when future versions are
-released -- any time you upgrade Kinosearch (or possibly, a module such as
-L<Lingua::Stem::Snowball|Lingua::Stem::Snowball> on which Kinosearch depends),
-you should expect to regenerate all kindex files from scratch. 
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
 
 =head1 SYNOPSIS
 

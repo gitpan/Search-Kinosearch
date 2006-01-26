@@ -332,6 +332,11 @@ __END__
 
 Search::Kinosearch::Kindex - A Kinosearch index
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
     my $kindex = Search::Kinosearch::Kindex->new();

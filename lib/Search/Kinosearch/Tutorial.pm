@@ -8,6 +8,11 @@ __END__
 
 Search::Kinosearch::Tutorial - Kinosearch Tutorial
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
 Documentation only.

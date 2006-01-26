@@ -266,8 +266,7 @@ sub init_kindexer {
     ### The Sort::External object autosorts the kinodata cache.
     $self->{kinodata_cache} = Sort::External->new(
         -working_dir => $self->{temp_dir},
-        #-cache_size  => ??? TODO
-        -line_separator => 'random',
+        -mem_threshold  => 2**20,
         );
 }
 
@@ -975,12 +974,10 @@ __END__
 
 Search::Kinosearch::Kindexer - create kindex files
 
-=head1 WARNING
+=head1 DEPRECATED
 
-Kinosearch is ALPHA test software. 
-
-Please read the full warning in the L<Search::Kinosearch|Search::Kinosearch>
-documentation.
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
 
 =head1 SYNOPSIS
 

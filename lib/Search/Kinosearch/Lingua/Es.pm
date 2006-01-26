@@ -216,9 +216,10 @@ __END__
 
 Search::Kinosearch::Lingua::Es - Kinosearch Spanish language functions
 
-=head1 WARNING
+=head1 DEPRECATED
 
-Spanish language support is not yet complete in Kinosearch.
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
 
 =head1 SYNOPSIS
 

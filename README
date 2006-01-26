@@ -6,6 +6,11 @@ NAME
 
     Search::Kinosearch - search engine library
 
+DEPRECATED
+
+    Search::Kinosearch has been superseded by KinoSearch.  Please
+    use the new version.
+
 DESCRIPTION
 
     Kinosearch is a fast, extensible search engine library.  Its features

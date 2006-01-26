@@ -62,6 +62,11 @@ __END__
 
 Search::Kinosearch::Lingua - Language-specific Kinosearch functions
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
     ### Search::Kinosearch::Lingua is an abstract base class.

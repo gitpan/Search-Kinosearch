@@ -56,9 +56,10 @@ __END__
 
 Search::Kinosearch::Lingua::Hr - Kinosearch Croatian language functions
 
-=head1 WARNING
+=head1 DEPRECATED
 
-Croatian language functions are currently unsupported in Kinosearch.
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
 
 =head1 SYNOPSIS
 

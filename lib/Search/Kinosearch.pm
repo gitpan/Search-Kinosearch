@@ -2,7 +2,7 @@ package Search::Kinosearch;
 use strict;
 use warnings;
 
-our $VERSION = '0.021';
+our $VERSION = '0.022';
 
 ### Coding convention:
 ### Public methods use hash style parameters except when to do so would cause 
@@ -128,20 +128,10 @@ __END__
 
 Search::Kinosearch - Search Engine Library
 
-=head1 WARNING
+=head1 DEPRECATED
 
-Search::Kinosearch is ALPHA test software.  A MAJOR CHANGE TO THE API which
-will BREAK BACKWARDS COMPATIBILITY is scheduled. 
-
-Bug fix releases will continue for the current stable 0.02 branch until the
-new branch is ready.  If you wish to use Kinosearch for production, you should
-use the 0.02 branch and make sure that you are in a position to control when
-the installed version of Kinosearch gets upgraded.  
-
-For a basic idea of what is planned, see the TODO list below.  If you would
-to help shape the new version, consider subscribing to the Kinosearch mailing
-list, which can be found via the Kinosearch homepage:
-L<http://www.rectangular.com/kinosearch>.
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
 
 =head1 SYNOPSIS
 

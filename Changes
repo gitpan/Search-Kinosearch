@@ -1,5 +1,8 @@
 Revision history for Perl extension Search::Kinosearch.
 
+0.022 2006-01-24
+     - Module deprecated, superseded by KinoSearch.
+
 0.021 2005-07-25
      - Change documentation wrt -temp_directory
      - Make Kindexer compatible with Sort::External 0.05

@@ -153,6 +153,11 @@ __END__
 
 Search::Kinosearch::Lingua::En - Kinosearch English-language functions
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
 No public interface.

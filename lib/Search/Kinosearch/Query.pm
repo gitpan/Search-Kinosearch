@@ -89,6 +89,11 @@ __END__
 
 Search::Kinosearch::Query - create queries to feed to KSearch 
 
+=head1 DEPRECATED
+
+Search::Kinosearch has been superseded by L<KinoSearch|KinoSearch>.  Please
+use the new version.
+
 =head1 SYNOPSIS
 
     my $query = Search::Kinosearch::Query->new(
